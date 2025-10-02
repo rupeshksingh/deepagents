@@ -13,8 +13,7 @@ import time
 from typing import Dict, List, Optional, Any
 import json
 
-# Defer ChatOpenAI import to avoid Pydantic issues
-# from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI
 from prompts import (
                 TENDER_ANALYSIS_SYSTEM_PROMPT,
                 DOCUMENT_ANALYZER_PROMPT,
@@ -53,16 +52,12 @@ class TenderAnalysisAgent:
         self.current_tender_id = None
         self.conversation_history = []
         self.checkpointer = MemorySaver()
-        # Defer model initialization to avoid Pydantic issues
-        # self.model = ChatOpenAI(model="gpt-5")
-        self.model = None
+        self.model = ChatOpenAI(model="gpt-5")
         self.tool_logger = get_tool_logger()
         
-        # Initialize run tracking
         self.current_run_id = None
         self.run_start_time = None
         
-        # Set agent context for this instance
         set_agent_context("react_agent", f"react_agent_{org_id}")
         
         self.agent = self._create_agent()
@@ -70,9 +65,6 @@ class TenderAnalysisAgent:
     def _create_agent(self):
         """Create the deep agent graph with custom tools and subagents."""
         try:
-            from langchain_openai import ChatOpenAI
-            self.model = ChatOpenAI(model="gpt-5")
-            
             tools = REACT_TOOLS
 
             subagents = [
@@ -127,7 +119,6 @@ class TenderAnalysisAgent:
         Returns:
             Agent response
         """
-        # Start query logging
         session_id = log_query_start(user_query)
         
         try:
@@ -187,7 +178,6 @@ class TenderAnalysisAgent:
             
             logger.info("Successfully processed query with agent graph")
             
-            # End query logging
             log_query_end(session_id, agent_response)
             
             return agent_response
@@ -196,7 +186,6 @@ class TenderAnalysisAgent:
             logger.error(f"Error in chat: {e}")
             error_response = f"I apologize, but I encountered an error while processing your request: {str(e)}"
             
-            # Log query end with error
             log_query_end(session_id, error_response)
             
             return error_response
@@ -306,7 +295,6 @@ class TenderAnalysisAgent:
             if self.run_start_time:
                 stats["run_duration"] = time.time() - self.run_start_time
             
-            # Check logs directory
             logs_dir = "logs"
             if os.path.exists(logs_dir):
                 for log_file in os.listdir(logs_dir):
@@ -325,7 +313,6 @@ class TenderAnalysisAgent:
                                         tool_name = data.get("tool_name", "unknown")
                                         stats["tool_call_types"][tool_name] = stats["tool_call_types"].get(tool_name, 0) + 1
                                         
-                                        # Track agent context
                                         agent_context = data.get("agent_context", {})
                                         agent_type = agent_context.get("agent_type", "unknown")
                                         stats["agent_calls"][agent_type] = stats["agent_calls"].get(agent_type, 0) + 1
@@ -345,7 +332,6 @@ class TenderAnalysisAgent:
                                 elif "TOOL_CALL_ERROR:" in line:
                                     stats["errors"] += 1
             
-            # Calculate averages
             if stats["execution_times"]:
                 stats["avg_execution_time_ms"] = sum(stats["execution_times"]) / len(stats["execution_times"])
                 stats["max_execution_time_ms"] = max(stats["execution_times"])
@@ -385,61 +371,62 @@ class TenderAnalysisAgent:
         }
 
 async def main():
-    """Example usage of the TenderAnalysisAgent."""
-
     agent = TenderAnalysisAgent(org_id=1)
 
     print("=== Tender Analysis Agent Demo with Enhanced Logging ===\n")
 
-    # Start a new run session
     run_id = agent.start_run("Tender Analysis Demo Session")
     print(f"Started run: {run_id}\n")
 
     try:
         response1 = await agent.chat(
-        user_query="""What is the specific financial penalty (bod) for submitting a monthly turnover report late to SKI?""",
+        user_query="""Two things:
+(a) From the tender, extract all obligations related to web‑tilgængelighed and the Digitaliseringsstyrelsens WAS‑tool.
+(b) Confirm via web search the current legal basis and guidance we must follow for accessibility statements in Denmark (point to official sources).
+(c) Using Bilag A Kundeliste (xlsx/pdf), segment customers by type (kommune/region/stat/øvrige) and propose a prioritized roll‑out plan for making their websites/apps compliant.""",
         tender_id="68c99b8a10844521ad051544"
         )
         print("Response 1:", response1)
+        with open("response1.txt", "w", encoding="utf-8") as f:
+            f.write(response1)
         print("\n" + "="*50 + "\n")
         
-        response2 = await agent.chat(
-            user_query=""": List all the sub-services (Ydelser) we must be able to provide under the
-            mandatory service area "Ydelsesområde 4: It-sikkerhed, business continuity og
-            it-compliance"."""
-        )
-        print("Response 2:", response2)
-        print("\n" + "="*50 + "\n")
+#         response2 = await agent.chat(
+#             user_query="""We have been asked to take on a project involving the processing of
+# personal data for a customer. What are our immediate contractual obligations
+# according to the tender documents before we can begin the work?"""
+#         )
+#         print("Response 2:", response2)
+#         print("\n" + "="*50 + "\n")
         
-        response3 = await agent.chat(
-            user_query="""A customer wants us to sign a Leveringsaftale (Bilag C). Where in this
-    agreement do we specify the consultants who will work on the project, and which
-    document defines the qualification levels for these consultants?"""
-        )
-        print("Response 3:", response3)
-        print("\n" + "="*50 + "\n")
+#         response3 = await agent.chat(
+#             user_query="""A customer wants us to sign a Leveringsaftale (Bilag C). Where in this
+#     agreement do we specify the consultants who will work on the project, and which
+#     document defines the qualification levels for these consultants?"""
+#         )
+#         print("Response 3:", response3)
+#         print("\n" + "="*50 + "\n")
         
-        print("Conversation History:")
-        for i, msg in enumerate(agent.get_conversation_history(), 1):
-            print(f"{i}. {msg['role']}: {msg['content'][:100]}...")
+#         print("Conversation History:")
+#         for i, msg in enumerate(agent.get_conversation_history(), 1):
+#             print(f"{i}. {msg['role']}: {msg['content'][:100]}...")
         
-        print("\nAgent Info with Enhanced Logging:")
-        info = agent.get_agent_info()
-        for key, value in info.items():
-            if key in ["tool_call_stats", "run_stats"]:
-                print(f"{key}:")
-                for stat_key, stat_value in value.items():
-                    print(f"  {stat_key}: {stat_value}")
-            else:
-                print(f"{key}: {value}")
+#         print("\nAgent Info with Enhanced Logging:")
+#         info = agent.get_agent_info()
+#         for key, value in info.items():
+#             if key in ["tool_call_stats", "run_stats"]:
+#                 print(f"{key}:")
+#                 for stat_key, stat_value in value.items():
+#                     print(f"  {stat_key}: {stat_value}")
+#             else:
+#                 print(f"{key}: {value}")
         
-        print("\nEnhanced Run Statistics:")
-        run_stats = agent.get_run_stats()
-        for key, value in run_stats.items():
-            print(f"{key}: {value}")
+#         print("\nEnhanced Run Statistics:")
+#         run_stats = agent.get_run_stats()
+#         for key, value in run_stats.items():
+#             print(f"{key}: {value}")
     
     finally:
-        # End the run session
         agent.end_run("Demo completed successfully")
         print(f"\nRun {run_id} completed and logged.")
 

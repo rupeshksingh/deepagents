@@ -1,0 +1,114 @@
+Quick assessment
+- The tender explicitly requires ensuring web accessibility and producing the mandatory accessibility statement via Digitaliseringsstyrelsens WAS-tool under the UX-design service area.
+- The current legal basis in Denmark is the Web Accessibility Directive (EU) 2016/2102, implemented by the Danish Webtilgængelighedslov and its executive order; Digitaliseringsstyrelsen mandates creation/publication of the statement in WAS and provides official guidance.
+- Bilag A Kundeliste (PDF + XLSX) allows clean segmentation into kommune, region, stat (ministerier, styrelser, statsfinansierede selvejende institutioner mv.) and øvrige. A phased, high-impact-first rollout is recommended.
+
+Key findings
+(a) Tender obligations re. web-tilgængelighed and WAS-tool
+- Bilag F Ydelsesområder – Ydelsesområde 12: Udvikling af ny funktionalitet – UX-design (both waterfall and agile subsections) includes:
+  - “Sikring af overholdelse af Loven om tilgængelighed af offentlige organers websteder og mobilapplikationer (Web-tilgængelighed).”
+  - “Udfærdigelse af lovpligtige erklæringer om web-tilgængelighed under anvendelse af Digitaliseringsstyrelsens WAS-tool (Web Accessibility Statement Tool).”
+  Evidence: Bilag F Ydelsesområder, UX-design rows under 3.5.1 and 3.5.2 (Side 31–33 af 35).
+- Interpretation: When engaged on UX/design or development, we must (1) ensure compliance with the web accessibility law (EN 301 549/WCAG) and (2) draft and update the legally required accessibility statements using the WAS tool, as part of the delivery.
+
+(b) Current legal basis and official guidance for accessibility statements in Denmark
+- EU legal basis:
+  - Directive (EU) 2016/2102 on the accessibility of public sector websites and mobile apps (EUR-Lex): https://eur-lex.europa.eu/DA/legal-content/summary/accessibility-of-public-sector-websites-and-mobile-apps.html
+- Danish implementation:
+  - Webtilgængelighedsloven (Act on accessibility of public sector bodies’ websites and mobile applications): Retsinformation (Lov): https://www.retsinformation.dk/eli/lta/2018/692
+  - Executive Order BEK nr. 2180 af 26/11/2021 (implements EN 301 549, monitoring, and statement requirements): https://www.retsinformation.dk/eli/lta/2021/2180
+- Official guidance and WAS-tool:
+  - Digitaliseringsstyrelsen – Om tilgængelighedserklæringen: https://digst.dk/digital-inklusion/webtilgaengelighed/om-tilgaengelighedserklaeringen/
+  - Digitaliseringsstyrelsen – Udfyldelse af tilgængelighedserklæring (WAS): https://digst.dk/digital-inklusion/webtilgaengelighed/vejledning/udfyldelse-af-tilgaengelighedserklaering/
+  - WAS-tool entry point (English UI available): https://edit.was.digst.dk/en-US/
+- Practical requirements (per Digst guidance and practice):
+  - Publish a detailed, exhaustive, and clear accessibility statement via WAS; link to it from the website footer (where practicable). For mobile apps, provide accessible access to the statement in app stores/within the app.
+  - Keep the statement updated; participate in monitoring by Digitaliseringsstyrelsen. Statements reflect EN 301 549 (WCAG 2.1 AA) conformance status and contact/complaint paths.
+
+(c) Segment Bilag A Kundeliste and propose prioritized rollout plan
+- Segmentation basis (Bilag A Kundeliste PDF, pkt. 1.1–1.4; XLSX fields “Markedstilhør/Segment”):
+  - Stat: ministerier, styrelser, statsfinansierede selvejende institutioner, universiteter (e.g., Erhvervsministeriet; CBS, AU; EVA). Ref.: Bilag A PDF s. 2 (1.1).
+  - Kommune: all municipalities incl. subordinate institutions (e.g., Esbjerg Kommune). Ref.: Bilag A PDF s. 2 (1.2).
+  - Region: the five regions and subordinate units. Ref.: Bilag A PDF s. 2 (1.3).
+  - Øvrige: offentligretlige organer, forsyningsvirksomheder, boligselskaber, foreninger mv. (e.g., DIN Forsyning, boligselskaber, NGO’er). Ref.: Bilag A PDF s. 2–3 (1.4).
+  Note: The XLSX (Bilag A Kundeliste.xlsx) contains explicit type markers (e.g., “Kommune”, “Region”, “Ministerie”, “Statsfinansieret selvejende institution”, “Universitet”, “Forsyningsvirksomhed”, “Boligselskab”, “Øvrige kunder”) supporting this segmentation.
+
+Proposed prioritized rollout plan for compliance
+Principles
+- Risk/impact first: prioritize entities with highest citizen impact, regulatory scrutiny, and brand risk.
+- Fastest path to legal defensibility: quickly publish/update WAS statements with accurate status while remediation proceeds.
+- Scale via templates, design systems, and training to reduce unit cost per site/app.
+
+Phase 0 – Mobilization (Weeks 1–3)
+- Governance: name accountable owners per entity; set up a central accessibility PMO.
+- Inventory: from Bilag A XLSX, compile all websites/apps per customer; register each in WAS.
+- Baseline checks: automated scans + expert sample audits to categorize A/B/C severity and quick wins.
+- Statement triage: where absent/outdated, create or update WAS statements with honest status and remediation timelines.
+
+Phase 1 – High-impact public bodies (Weeks 4–12)
+- Scope: Stat (ministerier, styrelser, universities), Regions.
+- Actions:
+  - Fix global templates/components first (headers, nav, forms, contrast, focus states).
+  - Publish/update WAS for all top-level portals and flagship apps; link in footers/app stores.
+  - Remediate most-visited content and priority PDFs (forms, citizen-facing guidance).
+- Outcome: Full statement coverage; material reduction of Level A/AA blockers on core user journeys.
+
+Phase 2 – Municipalities (Weeks 8–24, overlapping)
+- Scope: All Kommuner (start with largest traffic/most services).
+- Actions:
+  - Roll out an accessible design system and CMS component library; train editors (PDF/Docs remediation basics).
+  - Batch remediation sprints per municipality (web + key apps); WAS statements per site/app.
+  - Establish quarterly accessibility QA processes and update cycles for statements.
+
+Phase 3 – Øvrige (Weeks 16–32)
+- Scope: Forsyningsvirksomheder, boligselskaber, foreninger, øvrige offentligretlige organer.
+- Actions:
+  - Risk-based triage (critical services, payments, outages, safety).
+  - Lightweight audits + targeted fixes; ensure statements are in place and truthful.
+  - Integrate accessibility gates into change/release management.
+
+Cross-cutting enablers
+- PDF/document program: prioritize top 200 downloadable documents per entity; move to HTML where feasible; provide accessible templates and training.
+- Mobile apps: ensure in-app/access-store statement access, label controls, dynamic type, color contrast, and platform a11y APIs.
+- Procurement guardrails: update RFP/SoW templates to require EN 301 549 conformance and WAS obligations (aligns with Bilag F obligations).
+- Monitoring & KPIs: % sites/apps with valid WAS; % critical issues resolved; time-to-fix SLA; periodic Digst monitoring outcomes.
+
+Illustrative sequencing (examples from Bilag A)
+- Wave 1 (Stat/Region): Erhvervsministeriet; Region Hovedstaden; major universities (e.g., AU/CBS).
+- Wave 2 (Kommune): top 20 municipalities by population/traffic (e.g., Esbjerg Kommune), then remaining in regional clusters.
+- Wave 3 (Øvrige): DIN Forsyning; boligselskaber; sector NGOs delivering citizen-facing services.
+
+Strategic implications
+- The tender empowers you to include accessibility compliance and WAS statement work within scope without change orders (it’s called out in Bilag F). Use this to position proposal content and resourcing explicitly around these deliverables.
+- Fast publication of accurate WAS statements reduces legal and reputational exposure while deeper remediation is underway.
+- A shared design system and training drive down total remediation cost across many entities identified in Bilag A.
+
+Action items
+- Insert a dedicated “Accessibility and WAS” workstream in the delivery plan tied to Bilag F obligations (cite Ydelsesområde 12/UX).
+- Build and agree the Phase 0 inventory from Bilag A XLSX and assign WAS registrations per site/app.
+- Prepare standard WAS statement content blocks, process, and review checklist aligned to Digst guidance.
+- Stand up the accessible component library and remediation playbooks (web + app + PDFs), with training for editors.
+- Define KPIs and cadence to update WAS statements and report compliance progress to customers.
+
+Risks & opportunities
+- Risks
+  - Misclassification of entities (e.g., statsfinansierede selvejende institutioner) could lead to gaps; mitigate with a thorough inventory and legal check.
+  - Underestimating PDF remediation effort; mitigate with triage to HTML-first and templates/training.
+  - Decentralized content owners may regress compliance; mitigate with governance and QA gates.
+- Opportunities
+  - Clear differentiation: explicit compliance and WAS expertise directly aligns with Bilag F and legal requirements.
+  - Economies of scale: a single design system and training program supports hundreds of entities in Bilag A.
+  - Early WAS publication improves audit posture with Digitaliseringsstyrelsen.
+
+Citations and sources
+- Tender obligations: Bilag F Ydelsesområder – UX-design under 3.5.1/3.5.2 (Side 31–33 af 35): “Sikring af overholdelse af Loven om tilgængelighed…” and “Udfærdigelse af lovpligtige erklæringer … med Digitaliseringsstyrelsens WAS-tool.”
+- Customer segmentation definitions: Bilag A Kundeliste PDF, pkt. 1.1–1.4, s. 2–3.
+- Legal and guidance (official):
+  - Webtilgængelighedsloven (Retsinformation): https://www.retsinformation.dk/eli/lta/2018/692
+  - BEK nr. 2180 af 26/11/2021 (Retsinformation): https://www.retsinformation.dk/eli/lta/2021/2180
+  - Digst – Om tilgængelighedserklæringen: https://digst.dk/digital-inklusion/webtilgaengelighed/om-tilgaengelighedserklaeringen/
+  - Digst – Udfyldelse af tilgængelighedserklæring (WAS): https://digst.dk/digital-inklusion/webtilgaengelighed/vejledning/udfyldelse-af-tilgaengelighedserklaering/
+  - WAS-tool: https://edit.was.digst.dk/en-US
+  - EU Directive 2016/2102 summary: https://eur-lex.europa.eu/DA/legal-content/summary/accessibility-of-public-sector-websites-and-mobile-apps.html
+
+If you want, I can export the segmented Bilag A list into four tabs (Stat/Kommune/Region/Øvrige) and attach a customer-by-customer rollout calendar with estimated effort per wave.
