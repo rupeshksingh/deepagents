@@ -1,19 +1,20 @@
 from langchain_core.tools import tool, InjectedToolCallId
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
-from langchain.agents.tool_node import InjectedState
 from typing import Annotated, Union
-from deepagents.state import Todo, FilesystemState
-from deepagents.prompts import (
+from src.deepagents.state import Todo, FilesystemState
+from src.deepagents.prompts import (
     WRITE_TODOS_TOOL_DESCRIPTION,
     LIST_FILES_TOOL_DESCRIPTION,
     READ_FILE_TOOL_DESCRIPTION,
     WRITE_FILE_TOOL_DESCRIPTION,
     EDIT_FILE_TOOL_DESCRIPTION,
 )
+from src.deepagents.logging import log_tool_call
 
 
 @tool(description=WRITE_TODOS_TOOL_DESCRIPTION)
+@log_tool_call
 def write_todos(
     todos: list[Todo], tool_call_id: Annotated[str, InjectedToolCallId]
 ) -> Command:
@@ -28,15 +29,17 @@ def write_todos(
 
 
 @tool(description=LIST_FILES_TOOL_DESCRIPTION)
-def ls(state: Annotated[FilesystemState, InjectedState]) -> list[str]:
+@log_tool_call
+def ls(state: FilesystemState) -> list[str]:
     """List all files"""
     return list(state.get("files", {}).keys())
 
 
 @tool(description=READ_FILE_TOOL_DESCRIPTION)
+@log_tool_call
 def read_file(
     file_path: str,
-    state: Annotated[FilesystemState, InjectedState],
+    state: FilesystemState,
     offset: int = 0,
     limit: int = 2000,
 ) -> str:
@@ -79,10 +82,11 @@ def read_file(
 
 
 @tool(description=WRITE_FILE_TOOL_DESCRIPTION)
+@log_tool_call
 def write_file(
     file_path: str,
     content: str,
-    state: Annotated[FilesystemState, InjectedState],
+    state: FilesystemState,
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
     files = state.get("files", {})
@@ -98,11 +102,12 @@ def write_file(
 
 
 @tool(description=EDIT_FILE_TOOL_DESCRIPTION)
+@log_tool_call
 def edit_file(
     file_path: str,
     old_string: str,
     new_string: str,
-    state: Annotated[FilesystemState, InjectedState],
+    state: FilesystemState,
     tool_call_id: Annotated[str, InjectedToolCallId],
     replace_all: bool = False,
 ) -> Union[Command, str]:

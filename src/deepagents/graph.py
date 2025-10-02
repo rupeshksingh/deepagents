@@ -6,10 +6,10 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, SummarizationMiddleware, HumanInTheLoopMiddleware
 from langchain.agents.middleware.human_in_the_loop import ToolConfig
 from langchain.agents.middleware.prompt_caching import AnthropicPromptCachingMiddleware
-from deepagents.middleware import PlanningMiddleware, FilesystemMiddleware, SubAgentMiddleware
-from deepagents.prompts import BASE_AGENT_PROMPT
-from deepagents.model import get_default_model
-from deepagents.types import SubAgent, CustomSubAgent
+from src.deepagents.middleware import PlanningMiddleware, FilesystemMiddleware, SubAgentMiddleware, ToolCallLoggingMiddleware
+from src.deepagents.prompts import BASE_AGENT_PROMPT
+from src.deepagents.model import get_default_model
+from src.deepagents.types import SubAgent, CustomSubAgent
 
 def agent_builder(
     tools: Sequence[Union[BaseTool, Callable, dict[str, Any]]],
@@ -26,6 +26,7 @@ def agent_builder(
         model = get_default_model()
 
     deepagent_middleware = [
+        ToolCallLoggingMiddleware(agent_type="main_agent", agent_id=f"main_{id(model)}"),  # Enhanced logging middleware
         PlanningMiddleware(),
         FilesystemMiddleware(),
         SubAgentMiddleware(

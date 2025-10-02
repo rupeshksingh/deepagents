@@ -7,12 +7,72 @@ from langchain_core.tools import BaseTool, tool, InjectedToolCallId
 from langchain_core.messages import ToolMessage
 from langchain.chat_models import init_chat_model
 from langgraph.types import Command
-from langchain.agents.tool_node import InjectedState
-from typing import Annotated, Optional
-from deepagents.state import PlanningState, FilesystemState
-from deepagents.tools import write_todos, ls, read_file, write_file, edit_file
-from deepagents.prompts import WRITE_TODOS_SYSTEM_PROMPT, TASK_SYSTEM_PROMPT, FILESYSTEM_SYSTEM_PROMPT, TASK_TOOL_DESCRIPTION, BASE_AGENT_PROMPT
-from deepagents.types import SubAgent, CustomSubAgent
+from typing import Annotated
+from src.deepagents.state import PlanningState, FilesystemState
+from src.deepagents.tools import write_todos, ls, read_file, write_file, edit_file
+from src.deepagents.prompts import WRITE_TODOS_SYSTEM_PROMPT, TASK_SYSTEM_PROMPT, FILESYSTEM_SYSTEM_PROMPT, TASK_TOOL_DESCRIPTION, BASE_AGENT_PROMPT
+from src.deepagents.types import SubAgent, CustomSubAgent
+from src.deepagents.logging import log_tool_call, log_subagent_call, set_agent_context
+
+###########################
+# Tool Call Logging Middleware
+###########################
+
+class ToolCallLoggingMiddleware(AgentMiddleware):
+    """Enhanced middleware to log all tool calls at the agent level with context."""
+    
+    def __init__(self, agent_type: str = "main_agent", agent_id: str = None):
+        """Initialize with agent context."""
+        self.agent_type = agent_type
+        self.agent_id = agent_id or f"agent_{id(self)}"
+        # Set the agent context for this middleware
+        set_agent_context(self.agent_type, self.agent_id)
+    
+    def modify_tool_call(self, tool_call, agent_state):
+        """Log tool calls before they are executed with enhanced context."""
+        from src.deepagents.logging import get_enhanced_logger
+        from datetime import datetime
+        import json
+        
+        try:
+            logger = get_enhanced_logger()
+            tool_name = tool_call.get("name", "unknown")
+            tool_call_id = tool_call.get("id", "unknown")
+            
+            # Log the tool call attempt with full context
+            log_data = {
+                "event": "agent_tool_call",
+                "tool_name": tool_name,
+                "tool_call_id": tool_call_id,
+                "timestamp": datetime.now().isoformat(),
+                "args": tool_call.get("args", {}),
+                "agent_context": {
+                    "agent_type": self.agent_type,
+                    "agent_id": self.agent_id,
+                    "middleware": "ToolCallLoggingMiddleware"
+                }
+            }
+            logger.logger.info(f"AGENT_TOOL_CALL: {json.dumps(log_data, default=str)}")
+        except Exception as e:
+            # Fall back to basic logging if enhanced logger fails
+            from src.deepagents.logging import get_tool_logger
+            logger = get_tool_logger()
+            tool_name = tool_call.get("name", "unknown")
+            tool_call_id = tool_call.get("id", "unknown")
+            
+            log_data = {
+                "event": "agent_tool_call",
+                "tool_name": tool_name,
+                "tool_call_id": tool_call_id,
+                "timestamp": datetime.now().isoformat(),
+                "args": tool_call.get("args", {}),
+                "agent_type": self.agent_type,
+                "agent_id": self.agent_id
+            }
+            logger.logger.info(f"AGENT_TOOL_CALL: {json.dumps(log_data, default=str)}")
+        
+        return tool_call
+
 
 ###########################
 # Planning Middleware
@@ -141,14 +201,22 @@ def create_task_tool(
         @tool(
             description=TASK_TOOL_DESCRIPTION.format(other_agents=other_agents_string)
         )
+        @log_tool_call
         async def task(
             description: str,
             subagent_type: str,
-            state: Annotated[dict, InjectedState],
+            state: dict,
             tool_call_id: Annotated[str, InjectedToolCallId],
         ):
             if subagent_type not in agents:
                 return f"Error: invoked agent of type {subagent_type}, the only allowed types are {[f'`{k}`' for k in agents]}"
+            
+            # Set subagent context for logging
+            set_agent_context("subagent", f"subagent_{subagent_type}", subagent_type)
+            
+            # Log subagent call
+            log_subagent_call(subagent_type, description)
+            
             sub_agent = agents[subagent_type]
             state["messages"] = [{"role": "user", "content": description}]
             result = await sub_agent.ainvoke(state)
@@ -170,14 +238,22 @@ def create_task_tool(
         @tool(
             description=TASK_TOOL_DESCRIPTION.format(other_agents=other_agents_string)
         )
+        @log_tool_call
         def task(
             description: str,
             subagent_type: str,
-            state: Annotated[dict, InjectedState],
+            state: dict,
             tool_call_id: Annotated[str, InjectedToolCallId],
         ):
             if subagent_type not in agents:
                 return f"Error: invoked agent of type {subagent_type}, the only allowed types are {[f'`{k}`' for k in agents]}"
+            
+            # Set subagent context for logging
+            set_agent_context("subagent", f"subagent_{subagent_type}", subagent_type)
+            
+            # Log subagent call
+            log_subagent_call(subagent_type, description)
+            
             sub_agent = agents[subagent_type]
             state["messages"] = [{"role": "user", "content": description}]
             result = sub_agent.invoke(state)

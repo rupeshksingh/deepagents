@@ -1,5 +1,7 @@
-from langchain_anthropic import ChatAnthropic
-
+# Defer ChatOpenAI import to avoid Pydantic issues
+# from langchain_openai import ChatOpenAI
 
 def get_default_model():
-    return ChatAnthropic(model_name="claude-sonnet-4-20250514", max_tokens=64000)
+    """Get the default OpenAI chat model."""
+    from langchain_openai import ChatOpenAI
+    return ChatOpenAI(model_name="gpt-5")
