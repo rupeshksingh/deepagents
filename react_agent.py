@@ -1,10 +1,10 @@
 """
-Tender Analysis React Agent
+Tender Analysis React Agent with MongoDB Persistence
 
 A sophisticated React agent built using the Deep Agents library for comprehensive 
 tender analysis and document processing. This agent provides intelligent analysis 
 of tender documents, maintains conversation context, and uses multi-agent architecture 
-for specialized tasks.
+for specialized tasks with MongoDB-backed persistence for long context memory.
 """
 
 import os
@@ -25,7 +25,7 @@ from pymongo import MongoClient
 from dotenv import load_dotenv
 from src.deepagents.graph import async_create_deep_agent
 from src.deepagents.logging import log_query_start, log_query_end, get_tool_logger, start_run, end_run, set_agent_context
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.mongodb import MongoDBSaver
 from tools import REACT_TOOLS
 
 load_dotenv()
@@ -35,23 +35,39 @@ logger = logging.getLogger(__name__)
 
 class TenderAnalysisAgent:
     """
-    A React agent for tender analysis that uses the deep agents library.
+    A React agent for tender analysis that uses the deep agents library with MongoDB persistence.
     This agent can analyze tender documents, search for relevant information,
-    and maintain conversation context for iterative queries.
+    and maintain conversation context for iterative queries with persistent memory.
     """
     
     def __init__(self, org_id: int = 1):
         self.org_id = org_id
+        
+        # Get MongoDB URI from environment
+        self.mongodb_uri = os.environ.get("MONGODB_URL")
+        if not self.mongodb_uri:
+            raise ValueError("MONGODB_URL environment variable is not set")
+        
+        # Initialize MongoDB client
+        self.mongo_client = MongoClient(self.mongodb_uri)
+        
+        # Test the connection
         try:
-            mongodb_uri = os.environ.get("MONGODB_URL")
-            self.mongo_client = MongoClient(mongodb_uri)
+            self.mongo_client.admin.command('ping')
+            logger.info("Successfully connected to MongoDB")
         except Exception as e:
-            logger.warning(f"MongoDB connection failed: {e}")
-            self.mongo_client = None
+            raise ConnectionError(f"Failed to connect to MongoDB: {e}")
         
         self.current_tender_id = None
         self.conversation_history = []
-        self.checkpointer = MemorySaver()
+        
+        # Initialize MongoDBSaver checkpointer with correct parameters
+        self.checkpointer = MongoDBSaver(
+            client=self.mongo_client,
+            db_name=f"org_{org_id}"
+        )
+        logger.info(f"Successfully initialized MongoDBSaver for org_{org_id}")
+        
         self.model = ChatOpenAI(model="gpt-5")
         self.tool_logger = get_tool_logger()
         
@@ -101,7 +117,7 @@ class TenderAnalysisAgent:
                 "max_execution_time": 300
             })
             
-            logger.info("Successfully created deep agent graph with subagents")
+            logger.info("Successfully created deep agent graph with MongoDB-backed subagents")
             return configured_agent
             
         except Exception as e:
@@ -157,6 +173,7 @@ class TenderAnalysisAgent:
                 }
             }
             
+            # Invoke the agent with MongoDB-backed checkpointing
             response = await self.agent.ainvoke({
                 "messages": messages
             }, config=config)
@@ -176,7 +193,7 @@ class TenderAnalysisAgent:
                 "tender_id": self.current_tender_id
             })
             
-            logger.info("Successfully processed query with agent graph")
+            logger.info("Successfully processed query with MongoDB-backed agent graph")
             
             log_query_end(session_id, agent_response)
             
@@ -207,6 +224,12 @@ class TenderAnalysisAgent:
     def get_current_tender_id(self) -> Optional[str]:
         """Get the current tender ID."""
         return self.current_tender_id
+    
+    def cleanup(self):
+        """Clean up resources."""
+        if self.mongo_client:
+            self.mongo_client.close()
+        logger.info("MongoDB connection closed successfully")
     
     def get_tool_call_stats(self) -> Dict[str, Any]:
         """Get tool call statistics from the log file."""
@@ -358,10 +381,11 @@ class TenderAnalysisAgent:
                 "research-agent", 
                 "compliance-checker"
             ],
-            "memory_enabled": self.checkpointer is not None,
+            "memory_enabled": True,
+            "checkpointer_type": "MongoDBSaver",
             "model": "gpt-5",
-            "dependencies_available": True,
-            "mongodb_connected": self.mongo_client is not None,
+            "mongodb_connected": True,
+            "mongodb_database": f"org_{self.org_id}",
             "tools_available": len(REACT_TOOLS) if REACT_TOOLS else 0,
             "tool_monitoring_enabled": True,
             "enhanced_logging_enabled": True,
@@ -387,47 +411,46 @@ async def main():
         tender_id="68c99b8a10844521ad051544"
         )
         print("Response 1:", response1)
-        with open("response1.txt", "w", encoding="utf-8") as f:
-            f.write(response1)
         print("\n" + "="*50 + "\n")
         
-#         response2 = await agent.chat(
-#             user_query="""We have been asked to take on a project involving the processing of
-# personal data for a customer. What are our immediate contractual obligations
-# according to the tender documents before we can begin the work?"""
-#         )
-#         print("Response 2:", response2)
-#         print("\n" + "="*50 + "\n")
+        response2 = await agent.chat(
+            user_query="""We have been asked to take on a project involving the processing of
+personal data for a customer. What are our immediate contractual obligations
+according to the tender documents before we can begin the work?"""
+        )
+        print("Response 2:", response2)
+        print("\n" + "="*50 + "\n")
         
-#         response3 = await agent.chat(
-#             user_query="""A customer wants us to sign a Leveringsaftale (Bilag C). Where in this
-#     agreement do we specify the consultants who will work on the project, and which
-#     document defines the qualification levels for these consultants?"""
-#         )
-#         print("Response 3:", response3)
-#         print("\n" + "="*50 + "\n")
+        response3 = await agent.chat(
+            user_query="""A customer wants us to sign a Leveringsaftale (Bilag C). Where in this
+    agreement do we specify the consultants who will work on the project, and which
+    document defines the qualification levels for these consultants?"""
+        )
+        print("Response 3:", response3)
+        print("\n" + "="*50 + "\n")
         
-#         print("Conversation History:")
-#         for i, msg in enumerate(agent.get_conversation_history(), 1):
-#             print(f"{i}. {msg['role']}: {msg['content'][:100]}...")
+        print("Conversation History:")
+        for i, msg in enumerate(agent.get_conversation_history(), 1):
+            print(f"{i}. {msg['role']}: {msg['content'][:100]}...")
         
-#         print("\nAgent Info with Enhanced Logging:")
-#         info = agent.get_agent_info()
-#         for key, value in info.items():
-#             if key in ["tool_call_stats", "run_stats"]:
-#                 print(f"{key}:")
-#                 for stat_key, stat_value in value.items():
-#                     print(f"  {stat_key}: {stat_value}")
-#             else:
-#                 print(f"{key}: {value}")
+        print("\nAgent Info with Enhanced Logging:")
+        info = agent.get_agent_info()
+        for key, value in info.items():
+            if key in ["tool_call_stats", "run_stats"]:
+                print(f"{key}:")
+                for stat_key, stat_value in value.items():
+                    print(f"  {stat_key}: {stat_value}")
+            else:
+                print(f"{key}: {value}")
         
-#         print("\nEnhanced Run Statistics:")
-#         run_stats = agent.get_run_stats()
-#         for key, value in run_stats.items():
-#             print(f"{key}: {value}")
+        print("\nEnhanced Run Statistics:")
+        run_stats = agent.get_run_stats()
+        for key, value in run_stats.items():
+            print(f"{key}: {value}")
     
     finally:
         agent.end_run("Demo completed successfully")
+        agent.cleanup()
         print(f"\nRun {run_id} completed and logged.")
 
 if __name__ == "__main__":

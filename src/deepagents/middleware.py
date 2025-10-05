@@ -1,5 +1,6 @@
 """DeepAgents implemented as Middleware"""
-
+import json
+from datetime import datetime
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, AgentState, ModelRequest, SummarizationMiddleware
 from langchain.agents.middleware.prompt_caching import AnthropicPromptCachingMiddleware
@@ -12,7 +13,7 @@ from src.deepagents.state import PlanningState, FilesystemState
 from src.deepagents.tools import write_todos, ls, read_file, write_file, edit_file
 from src.deepagents.prompts import WRITE_TODOS_SYSTEM_PROMPT, TASK_SYSTEM_PROMPT, FILESYSTEM_SYSTEM_PROMPT, TASK_TOOL_DESCRIPTION, BASE_AGENT_PROMPT
 from src.deepagents.types import SubAgent, CustomSubAgent
-from src.deepagents.logging import log_tool_call, log_subagent_call, set_agent_context
+from src.deepagents.logging import log_tool_call, log_subagent_call, set_agent_context, get_tool_logger, get_enhanced_logger
 
 ###########################
 # Tool Call Logging Middleware
@@ -25,21 +26,16 @@ class ToolCallLoggingMiddleware(AgentMiddleware):
         """Initialize with agent context."""
         self.agent_type = agent_type
         self.agent_id = agent_id or f"agent_{id(self)}"
-        # Set the agent context for this middleware
         set_agent_context(self.agent_type, self.agent_id)
     
     def modify_tool_call(self, tool_call, agent_state):
         """Log tool calls before they are executed with enhanced context."""
-        from src.deepagents.logging import get_enhanced_logger
-        from datetime import datetime
-        import json
         
         try:
             logger = get_enhanced_logger()
             tool_name = tool_call.get("name", "unknown")
             tool_call_id = tool_call.get("id", "unknown")
-            
-            # Log the tool call attempt with full context
+
             log_data = {
                 "event": "agent_tool_call",
                 "tool_name": tool_name,
@@ -53,9 +49,7 @@ class ToolCallLoggingMiddleware(AgentMiddleware):
                 }
             }
             logger.logger.info(f"AGENT_TOOL_CALL: {json.dumps(log_data, default=str)}")
-        except Exception as e:
-            # Fall back to basic logging if enhanced logger fails
-            from src.deepagents.logging import get_tool_logger
+        except Exception:
             logger = get_tool_logger()
             tool_name = tool_call.get("name", "unknown")
             tool_call_id = tool_call.get("id", "unknown")
@@ -72,7 +66,6 @@ class ToolCallLoggingMiddleware(AgentMiddleware):
             logger.logger.info(f"AGENT_TOOL_CALL: {json.dumps(log_data, default=str)}")
         
         return tool_call
-
 
 ###########################
 # Planning Middleware
@@ -210,11 +203,9 @@ def create_task_tool(
         ):
             if subagent_type not in agents:
                 return f"Error: invoked agent of type {subagent_type}, the only allowed types are {[f'`{k}`' for k in agents]}"
-            
-            # Set subagent context for logging
+
             set_agent_context("subagent", f"subagent_{subagent_type}", subagent_type)
-            
-            # Log subagent call
+
             log_subagent_call(subagent_type, description)
             
             sub_agent = agents[subagent_type]
@@ -247,11 +238,9 @@ def create_task_tool(
         ):
             if subagent_type not in agents:
                 return f"Error: invoked agent of type {subagent_type}, the only allowed types are {[f'`{k}`' for k in agents]}"
-            
-            # Set subagent context for logging
+
             set_agent_context("subagent", f"subagent_{subagent_type}", subagent_type)
-            
-            # Log subagent call
+
             log_subagent_call(subagent_type, description)
             
             sub_agent = agents[subagent_type]

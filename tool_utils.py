@@ -7,18 +7,9 @@ import requests
 from bson import ObjectId  # pyright: ignore[reportMissingImports]
 from dotenv import load_dotenv
 from langchain_core.prompts import PromptTemplate
-# from langchain_cohere import CohereRerank  # pyright: ignore[reportMissingImports]
 from langchain_core.documents import Document
 from langchain_core.callbacks.manager import CallbackManagerForRetrieverRun
 from langchain_core.retrievers import BaseRetriever
-# Defer langchain_openai import to avoid Pydantic issues
-# from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-# Defer langchain_qdrant import to avoid missing module issues
-# from langchain_qdrant import (
-#     FastEmbedSparse,
-#     QdrantVectorStore,
-#     RetrievalMode,
-# )
 from openai import OpenAI
 from pydantic import Field
 from pymongo import MongoClient
@@ -27,12 +18,6 @@ load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 
-# compressor = CohereRerank(model="rerank-multilingual-v3.0")
-JOB_TIMEOUT = 60 * 30  # 30 minutes
-
-TASK_STATUS_PENDING = "pending"
-TASK_STATUS_ERROR = "error"
-TASK_STATUS_COMPLETED = "completed"
 
 class CustomRetriever(BaseRetriever):
     """A custom retriever that combines multiple retrievers and implements reranking."""

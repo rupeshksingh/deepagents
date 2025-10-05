@@ -541,14 +541,12 @@ async def iterative_document_analyzer(
     tender_id: str,
     org_id: int = 1
 ) -> Dict[str, Any]:
-    """Analyze or summarize large documents using MapReduce strategy.
+    """Analyze or summarize single documents.
     
-    This tool performs deep analysis of individual documents by breaking them into
-    manageable chunks and processing them iteratively. It's designed for comprehensive
-    document analysis tasks that require thorough examination of large files.
+    This tool performs deep analysis of individual file. It's designed for comprehensive
+    document analysis tasks that require thorough examination of individual files.
     
-    The MapReduce approach ensures efficient processing of large documents while
-    maintaining context and providing detailed, structured analysis results.
+    The analysis is performed on the entire file and the results are returned in a structured format.
     
     Args:
         file_id (str): Unique identifier for the specific document to analyze.
@@ -928,12 +926,10 @@ async def risk_assessment_analyzer(
         )
     """
     try:
-        # Get tender overview
         overview_result = await consult_tender_manifest("get_overview", tender_id, org_id)
         if "error" in overview_result:
             return {"error": f"Failed to get tender overview: {overview_result['error']}"}
         
-        # Search for risk-related information
         risk_query = "risk assessment mitigation strategies contingency planning"
         if risk_categories:
             risk_query += f" {' '.join(risk_categories)} risks"
@@ -943,7 +939,6 @@ async def risk_assessment_analyzer(
         if "error" in search_results:
             return {"error": f"Failed to search for risk information: {search_results['error']}"}
         
-        # Analyze risks comprehensively
         analysis_prompt = f"""
         Perform comprehensive risk assessment analysis based on the following information:
         

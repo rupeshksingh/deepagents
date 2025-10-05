@@ -11,6 +11,9 @@ from api.models import (
     ConversationResponse,
     PaginatedQueryResponse,
     PaginatedConversationResponse,
+    PaginatedUserQueryResponse,
+    StreamingQueryResponse,
+    UserQueryParams,
     QueryStatus,
     ConversationQueryParams
 )
@@ -24,8 +27,9 @@ class QueryStore:
     def __init__(self, client: MongoClient):
         self.client = client
         self.db = client["org_1"]
-        self.queries_collection = self.db["queries"]
-        self.conversations_collection = self.db["conversations"]
+        self.queries_collection = self.db["proposal_assistant_queries"]
+        self.conversations_collection = self.db["proposal_assistant_chat"]
+        self.users_collection = self.db["proposal_assistant_users"]
         
         self.agents = {}
         
@@ -82,6 +86,53 @@ class QueryStore:
         except Exception as e:
             logger.error(f"Error creating conversation: {str(e)}")
             raise Exception(f"Failed to create conversation: {str(e)}")
+
+    async def create_streaming_query(self, query_request: QueryCreateRequest, org_id: int = 1):
+        """Create a streaming query with automatic conversation management"""
+        try:
+            conversation_id = query_request.conversation_id
+            
+            if query_request.create_new_conversation or not conversation_id:
+                conversation_response = await self.create_conversation(
+                    ConversationCreateRequest(name=f"Chat with {query_request.user_id or 'User'}"), 
+                    org_id
+                )
+                conversation_id = conversation_response.id
+            
+            if not self.conversations_collection.find_one({"_id": ObjectId(conversation_id)}):
+                raise Exception(f"Conversation {conversation_id} not found")
+            
+            current_time = datetime.now(timezone.utc).replace(tzinfo=None)
+            
+            query_doc = {
+                "conversation_id": conversation_id,
+                "query_text": query_request.query_text,
+                "tender_id": query_request.tender_id,
+                "user_id": query_request.user_id,
+                "status": QueryStatus.PENDING.value,
+                "response_text": None,
+                "error_message": None,
+                "created_at": current_time,
+                "completed_at": None,
+                "org_id": org_id,
+                "processing_started_at": None,
+                "processing_time_ms": None
+            }
+            
+            result = self.queries_collection.insert_one(query_doc)
+            query_id = str(result.inserted_id)
+
+            self.conversations_collection.update_one(
+                {"_id": ObjectId(conversation_id)},
+                {"$inc": {"query_count": 1}}
+            )
+            
+            async for chunk in self._process_streaming_query(query_id, conversation_id, org_id):
+                yield chunk
+            
+        except Exception as e:
+            logger.error(f"Error creating streaming query: {str(e)}")
+            raise Exception(f"Failed to create streaming query: {str(e)}")
 
     async def create_query(self, conversation_id: str, query_request: QueryCreateRequest, org_id: int = 1) -> QueryResponse:
         """Create a new query and start processing it asynchronously"""
@@ -172,6 +223,92 @@ class QueryStore:
                 "error_message": str(e),
                 "completed_at": datetime.now(timezone.utc).replace(tzinfo=None)
             })
+
+    async def _process_streaming_query(self, query_id: str, conversation_id: str, org_id: int):
+        """Process query with streaming response"""
+        try:
+            self._update_query(query_id, {
+                "status": QueryStatus.PROCESSING.value,
+                "processing_started_at": datetime.now(timezone.utc).replace(tzinfo=None)
+            })
+            
+            yield StreamingQueryResponse(
+                query_id=query_id,
+                conversation_id=conversation_id,
+                chunk_type="start",
+                status=QueryStatus.PROCESSING,
+                metadata={"message": "Processing started"}
+            )
+            
+            query_doc = self.queries_collection.find_one({"_id": ObjectId(query_id)})
+            if not query_doc:
+                logger.error(f"Query not found: {query_id}")
+                yield StreamingQueryResponse(
+                    query_id=query_id,
+                    conversation_id=conversation_id,
+                    chunk_type="error",
+                    status=QueryStatus.FAILED,
+                    content="Query not found"
+                )
+                return
+            
+            agent = self._get_agent(org_id)
+            start_time = datetime.now()
+            
+            response = await agent.chat(
+                user_query=query_doc["query_text"],
+                tender_id=query_doc.get("tender_id")
+            )
+            
+            end_time = datetime.now()
+            processing_time_ms = int((end_time - start_time).total_seconds() * 1000)
+            
+            words = response.split()
+            chunk_size = 10
+            
+            for i in range(0, len(words), chunk_size):
+                chunk = " ".join(words[i:i + chunk_size])
+                yield StreamingQueryResponse(
+                    query_id=query_id,
+                    conversation_id=conversation_id,
+                    chunk_type="content",
+                    content=chunk,
+                    status=QueryStatus.PROCESSING
+                )
+                await asyncio.sleep(0.1)
+            
+            self._update_query(query_id, {
+                "status": QueryStatus.COMPLETED.value,
+                "response_text": response,
+                "completed_at": datetime.now(timezone.utc).replace(tzinfo=None),
+                "processing_time_ms": processing_time_ms
+            })
+            
+            yield StreamingQueryResponse(
+                query_id=query_id,
+                conversation_id=conversation_id,
+                chunk_type="end",
+                status=QueryStatus.COMPLETED,
+                metadata={"processing_time_ms": processing_time_ms}
+            )
+            
+            logger.info(f"Successfully processed streaming query {query_id} in {processing_time_ms}ms")
+            
+        except Exception as e:
+            logger.error(f"Error processing streaming query {query_id}: {str(e)}")
+            self._update_query(query_id, {
+                "status": QueryStatus.FAILED.value,
+                "error_message": str(e),
+                "completed_at": datetime.now(timezone.utc).replace(tzinfo=None)
+            })
+            
+            yield StreamingQueryResponse(
+                query_id=query_id,
+                conversation_id=conversation_id,
+                chunk_type="error",
+                status=QueryStatus.FAILED,
+                content=str(e)
+            )
     
     def get_query_by_id(self, query_id: str) -> Optional[QueryResponse]:
         """Get a single query by ID"""
@@ -272,6 +409,42 @@ class QueryStore:
             logger.error(f"Error getting conversation queries: {str(e)}")
             raise Exception(f"Failed to get conversation queries: {str(e)}")
     
+    def get_user_queries(self, user_id: str, params: UserQueryParams) -> PaginatedUserQueryResponse:
+        """Get all queries for a specific user with pagination and filtering"""
+        try:
+            query_filter = {"user_id": user_id}
+            
+            if params.status:
+                query_filter["status"] = params.status.value
+                
+            if params.tender_id:
+                query_filter["tender_id"] = params.tender_id
+                
+            if params.conversation_id:
+                query_filter["conversation_id"] = params.conversation_id
+            
+            total_count = self.queries_collection.count_documents(query_filter)
+            total_pages = (total_count + params.page_size - 1) // params.page_size
+            
+            skip = (params.page - 1) * params.page_size
+            cursor = self.queries_collection.find(query_filter).sort("created_at", -1).skip(skip).limit(params.page_size)
+            docs = list(cursor)
+            
+            items = [self._convert_to_query_response(doc) for doc in docs]
+            
+            return PaginatedUserQueryResponse(
+                items=items,
+                total=total_count,
+                page=params.page,
+                page_size=params.page_size,
+                total_pages=total_pages,
+                user_id=user_id
+            )
+            
+        except Exception as e:
+            logger.error(f"Error getting user queries: {str(e)}")
+            raise Exception(f"Failed to get user queries: {str(e)}")
+
     def _convert_to_query_response(self, doc: dict) -> QueryResponse:
         """Convert MongoDB document to QueryResponse"""
         return QueryResponse(
@@ -281,6 +454,7 @@ class QueryStore:
             response_text=doc.get("response_text"),
             status=QueryStatus(doc["status"]),
             tender_id=doc.get("tender_id"),
+            user_id=doc.get("user_id"),
             created_at=doc["created_at"],
             completed_at=doc.get("completed_at"),
             error_message=doc.get("error_message"),

@@ -8,7 +8,7 @@ import json
 import time
 import os
 from datetime import datetime
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional
 from functools import wraps
 import uuid
 import threading
@@ -32,18 +32,14 @@ class EnhancedToolCallLogger:
         self.current_agent_context = None
         self._lock = threading.Lock()
         
-        # Ensure log directory exists
         os.makedirs(base_log_dir, exist_ok=True)
         
-        # Initialize main logger
         self.logger = logging.getLogger("deepagents_enhanced")
         self.logger.setLevel(log_level)
         
-        # Clear existing handlers
         for handler in self.logger.handlers[:]:
             self.logger.removeHandler(handler)
         
-        # Set up console handler
         console_handler = logging.StreamHandler()
         console_handler.setLevel(log_level)
         console_formatter = logging.Formatter(
@@ -62,10 +58,8 @@ class EnhancedToolCallLogger:
             self.current_session_id = None
             self.current_agent_context = None
             
-            # Create run-specific log file
             run_log_file = os.path.join(self.base_log_dir, f"run_{self.current_run_id}.log")
             
-            # Add file handler for this run
             file_handler = logging.FileHandler(run_log_file)
             file_handler.setLevel(self.log_level)
             file_formatter = logging.Formatter(
@@ -75,7 +69,6 @@ class EnhancedToolCallLogger:
             file_handler.setFormatter(file_formatter)
             self.logger.addHandler(file_handler)
             
-            # Log run start
             log_data = {
                 "event": "run_start",
                 "run_id": self.current_run_id,
@@ -98,7 +91,6 @@ class EnhancedToolCallLogger:
                 }
                 self.logger.info(f"RUN_END: {json.dumps(log_data, default=str)}")
                 
-                # Remove file handler
                 handlers_to_remove = [h for h in self.logger.handlers if isinstance(h, logging.FileHandler)]
                 for handler in handlers_to_remove:
                     handler.close()
@@ -130,7 +122,7 @@ class EnhancedToolCallLogger:
                 "run_id": self.current_run_id,
                 "session_id": session_id,
                 "timestamp": datetime.now().isoformat(),
-                "query": query[:1000],  # Limit query length
+                "query": query[:1000],
                 "agent_context": self.current_agent_context
             }
             self.logger.info(f"SESSION_START: {json.dumps(log_data, default=str)}")
@@ -166,16 +158,14 @@ class EnhancedToolCallLogger:
     
     def log_tool_call_end(self, tool_name: str, tool_call_id: str, result: Any, execution_time: float):
         """Log the end of a tool call with full context and detailed output."""
-        # Prepare result details
         result_details = {
             "type": type(result).__name__,
             "preview": str(result)[:1000] if result is not None else None,
             "size_bytes": len(str(result).encode('utf-8')) if result is not None else 0
         }
-        
-        # If result is a dict, try to extract more structured info
+
         if isinstance(result, dict):
-            result_details["keys"] = list(result.keys())[:10]  # First 10 keys
+            result_details["keys"] = list(result.keys())[:10]
             result_details["is_empty"] = len(result) == 0
         
         log_data = {
@@ -224,8 +214,6 @@ class EnhancedToolCallLogger:
         self.logger.info(f"SUBAGENT_CALL: {json.dumps(log_data, default=str)}")
         return session_id
 
-
-# Global logger instance
 _enhanced_logger = None
 
 def get_enhanced_logger() -> EnhancedToolCallLogger:
@@ -236,7 +224,6 @@ def get_enhanced_logger() -> EnhancedToolCallLogger:
     return _enhanced_logger
 
 
-# Backward compatibility - keep the old logger for existing code
 class ToolCallLogger:
     """Legacy logger for backward compatibility."""
     
@@ -306,7 +293,6 @@ class ToolCallLogger:
         self.logger.error(f"TOOL_CALL_ERROR: {json.dumps(log_data, default=str)}")
 
 
-# Global logger instance
 _tool_logger = None
 
 def get_tool_logger() -> ToolCallLogger:
@@ -328,11 +314,10 @@ def log_tool_call(func):
     """
     @wraps(func)
     def wrapper(*args, **kwargs):
-        # Try to use enhanced logger first, fall back to legacy
         try:
             logger = get_enhanced_logger()
             use_enhanced = True
-        except:
+        except Exception:
             logger = get_tool_logger()
             use_enhanced = False
         
@@ -384,8 +369,7 @@ def log_query_start(query: str, session_id: Optional[str] = None):
     try:
         logger = get_enhanced_logger()
         return logger.start_session(query, session_id)
-    except:
-        # Fall back to legacy logging
+    except Exception:
         logger = get_tool_logger()
         if session_id is None:
             session_id = str(uuid.uuid4())
@@ -405,8 +389,7 @@ def log_query_end(session_id: str, result: Any):
     try:
         logger = get_enhanced_logger()
         logger.end_session(session_id, result)
-    except:
-        # Fall back to legacy logging
+    except Exception:
         logger = get_tool_logger()
         log_data = {
             "event": "query_end",
@@ -422,8 +405,7 @@ def log_subagent_call(subagent_type: str, description: str, session_id: Optional
     try:
         logger = get_enhanced_logger()
         return logger.log_subagent_call(subagent_type, description, session_id)
-    except:
-        # Fall back to legacy logging
+    except Exception:
         logger = get_tool_logger()
         if session_id is None:
             session_id = str(uuid.uuid4())
@@ -439,7 +421,6 @@ def log_subagent_call(subagent_type: str, description: str, session_id: Optional
         return session_id
 
 
-# Enhanced functions for run management
 def start_run(run_description: str = "DeepAgents Run") -> str:
     """Start a new run session."""
     logger = get_enhanced_logger()
