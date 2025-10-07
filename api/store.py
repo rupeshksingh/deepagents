@@ -17,12 +17,12 @@ from api.models import (
     QueryStatus,
     ConversationQueryParams
 )
-from react_agent import TenderAnalysisAgent
+from react_agent import ReactAgent
 
 logger = logging.getLogger(__name__)
 
 class QueryStore:
-    """Store class for managing query operations with MongoDB"""
+    """Store class for managing query operations with MongoDB and agent services"""
     
     def __init__(self, client: MongoClient):
         self.client = client
@@ -33,10 +33,10 @@ class QueryStore:
         
         self.agents = {}
         
-    def _get_agent(self, org_id: int = 1) -> TenderAnalysisAgent:
-        """Get or create an agent instance for the organization"""
+    def _get_agent(self, org_id: int = 1) -> ReactAgent:
+        """Get or create a ReactAgent instance for the organization"""
         if org_id not in self.agents:
-            self.agents[org_id] = TenderAnalysisAgent(org_id=org_id)
+            self.agents[org_id] = ReactAgent(self.client, org_id)
         return self.agents[org_id]
     
     def _update_query(
@@ -184,7 +184,7 @@ class QueryStore:
             raise Exception(f"Failed to create query: {str(e)}")
     
     async def _process_query_async(self, query_id: str, org_id: int):
-        """Process query asynchronously using the TenderAnalysisAgent"""
+        """Process query asynchronously using the AgentService"""
         try:
             self._update_query(query_id, {
                 "status": QueryStatus.PROCESSING.value,
@@ -196,25 +196,36 @@ class QueryStore:
                 logger.error(f"Query not found: {query_id}")
                 return
             
-            agent = self._get_agent(org_id)
             start_time = datetime.now()
             
-            response = await agent.chat(
+            thread_id = f"conv_{query_doc['conversation_id']}"
+            
+            result = await self._get_agent(org_id).chat_sync(
                 user_query=query_doc["query_text"],
-                tender_id=query_doc.get("tender_id")
+                thread_id=thread_id,
+                tender_id=query_doc.get("tender_id"),
+                user_id=query_doc.get("user_id")
             )
             
             end_time = datetime.now()
             processing_time_ms = int((end_time - start_time).total_seconds() * 1000)
             
-            self._update_query(query_id, {
-                "status": QueryStatus.COMPLETED.value,
-                "response_text": response,
-                "completed_at": datetime.now(timezone.utc).replace(tzinfo=None),
-                "processing_time_ms": processing_time_ms
-            })
-            
-            logger.info(f"Successfully processed query {query_id} in {processing_time_ms}ms")
+            if result["success"]:
+                self._update_query(query_id, {
+                    "status": QueryStatus.COMPLETED.value,
+                    "response_text": result["response"],
+                    "completed_at": datetime.now(timezone.utc).replace(tzinfo=None),
+                    "processing_time_ms": processing_time_ms
+                })
+                logger.info(f"Successfully processed query {query_id} in {processing_time_ms}ms")
+            else:
+                self._update_query(query_id, {
+                    "status": QueryStatus.FAILED.value,
+                    "error_message": result.get("error", "Unknown error"),
+                    "completed_at": datetime.now(timezone.utc).replace(tzinfo=None),
+                    "processing_time_ms": processing_time_ms
+                })
+                logger.error(f"Failed to process query {query_id}: {result.get('error')}")
             
         except Exception as e:
             logger.error(f"Error processing query {query_id}: {str(e)}")
@@ -225,7 +236,7 @@ class QueryStore:
             })
 
     async def _process_streaming_query(self, query_id: str, conversation_id: str, org_id: int):
-        """Process query with streaming response"""
+        """Process query with streaming response using AgentService"""
         try:
             self._update_query(query_id, {
                 "status": QueryStatus.PROCESSING.value,
@@ -251,48 +262,62 @@ class QueryStore:
                     content="Query not found"
                 )
                 return
-            
-            agent = self._get_agent(org_id)
+
             start_time = datetime.now()
             
-            response = await agent.chat(
+            thread_id = f"conv_{conversation_id}"
+            
+            full_response = ""
+            async for chunk in self._get_agent(org_id).chat_streaming(
                 user_query=query_doc["query_text"],
-                tender_id=query_doc.get("tender_id")
-            )
+                thread_id=thread_id,
+                tender_id=query_doc.get("tender_id"),
+                user_id=query_doc.get("user_id")
+            ):
+                if chunk["chunk_type"] == "content":
+                    full_response += chunk["content"] + " "
+                    yield StreamingQueryResponse(
+                        query_id=query_id,
+                        conversation_id=conversation_id,
+                        chunk_type="content",
+                        content=chunk["content"],
+                        status=QueryStatus.PROCESSING
+                    )
+                elif chunk["chunk_type"] == "end":
+                    end_time = datetime.now()
+                    processing_time_ms = int((end_time - start_time).total_seconds() * 1000)
+                    
+                    self._update_query(query_id, {
+                        "status": QueryStatus.COMPLETED.value,
+                        "response_text": chunk.get("total_response", full_response.strip()),
+                        "completed_at": datetime.now(timezone.utc).replace(tzinfo=None),
+                        "processing_time_ms": processing_time_ms
+                    })
+                    
+                    yield StreamingQueryResponse(
+                        query_id=query_id,
+                        conversation_id=conversation_id,
+                        chunk_type="end",
+                        status=QueryStatus.COMPLETED,
+                        metadata={"processing_time_ms": processing_time_ms}
+                    )
+                elif chunk["chunk_type"] == "error":
+                    self._update_query(query_id, {
+                        "status": QueryStatus.FAILED.value,
+                        "error_message": chunk.get("error", "Unknown error"),
+                        "completed_at": datetime.now(timezone.utc).replace(tzinfo=None)
+                    })
+                    
+                    yield StreamingQueryResponse(
+                        query_id=query_id,
+                        conversation_id=conversation_id,
+                        chunk_type="error",
+                        status=QueryStatus.FAILED,
+                        content=chunk["content"]
+                    )
+                    return
             
-            end_time = datetime.now()
-            processing_time_ms = int((end_time - start_time).total_seconds() * 1000)
-            
-            words = response.split()
-            chunk_size = 10
-            
-            for i in range(0, len(words), chunk_size):
-                chunk = " ".join(words[i:i + chunk_size])
-                yield StreamingQueryResponse(
-                    query_id=query_id,
-                    conversation_id=conversation_id,
-                    chunk_type="content",
-                    content=chunk,
-                    status=QueryStatus.PROCESSING
-                )
-                await asyncio.sleep(0.1)
-            
-            self._update_query(query_id, {
-                "status": QueryStatus.COMPLETED.value,
-                "response_text": response,
-                "completed_at": datetime.now(timezone.utc).replace(tzinfo=None),
-                "processing_time_ms": processing_time_ms
-            })
-            
-            yield StreamingQueryResponse(
-                query_id=query_id,
-                conversation_id=conversation_id,
-                chunk_type="end",
-                status=QueryStatus.COMPLETED,
-                metadata={"processing_time_ms": processing_time_ms}
-            )
-            
-            logger.info(f"Successfully processed streaming query {query_id} in {processing_time_ms}ms")
+            logger.info(f"Successfully processed streaming query {query_id}")
             
         except Exception as e:
             logger.error(f"Error processing streaming query {query_id}: {str(e)}")
@@ -490,4 +515,13 @@ class QueryStore:
             
         except Exception as e:
             logger.error(f"Error getting query stats: {str(e)}")
+            return {"error": str(e)}
+    
+    def get_agent_stats(self, org_id: int = 1) -> dict[str, Any]:
+        """Get agent statistics and health information"""
+        try:
+            agent = self._get_agent(org_id)
+            return agent.get_agent_info()
+        except Exception as e:
+            logger.error(f"Error getting agent stats: {str(e)}")
             return {"error": str(e)}

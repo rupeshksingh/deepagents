@@ -1,8 +1,7 @@
 from datetime import datetime
 from enum import Enum
 from pydantic import BaseModel, Field
-from typing import List, Optional, AsyncGenerator
-import json
+from typing import List, Optional
 
 class QueryStatus(str, Enum):
     PENDING = "pending"

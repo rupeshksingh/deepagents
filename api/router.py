@@ -35,6 +35,8 @@ class QueryRouters:
         self.query_router.get("/conversations/{conversation_id}/queries", status_code=status.HTTP_200_OK, tags=["Queries"])(self.get_conversation_queries)
         
         self.query_router.get("/users/{user_id}/queries", status_code=status.HTTP_200_OK, tags=["User Queries"])(self.get_user_queries)
+        
+        self.query_router.get("/agent/stats", status_code=status.HTTP_200_OK, tags=["Agent"])(self.get_agent_stats)
 
     def _handle_error(self, e: Exception, operation: str) -> HTTPException:
         """Centralized error handling"""
@@ -243,6 +245,16 @@ class QueryRouters:
             raise
         except Exception as e:
             raise self._handle_error(e, "get user queries")
+
+    def get_agent_stats(
+        self,
+        org_id: int = Depends(lambda: 1)
+    ) -> dict:
+        """Get agent statistics and health information"""
+        try:
+            return self.query_store.get_agent_stats(org_id)
+        except Exception as e:
+            raise self._handle_error(e, "get agent stats")
 
 def create_query_routers(client: MongoClient) -> QueryRouters:
     """Factory function to create query routers with MongoDB client"""

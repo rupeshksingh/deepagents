@@ -46,74 +46,8 @@ from tool_utils import (
 )
 
 import logging
-import json
-import time
-from datetime import datetime
-from functools import wraps
-import uuid
 
-def log_tool_call(func):
-    """Standalone tool call logging decorator."""
-    @wraps(func)
-    async def wrapper(*args, **kwargs):
-        tool_name = func.__name__
-        tool_call_id = str(uuid.uuid4())
-        
-        log_args = {}
-        log_kwargs = {}
-        
-        for i, arg in enumerate(args):
-            if not hasattr(arg, '__dict__') or not isinstance(arg, dict):
-                log_args[f"arg_{i}"] = str(arg)[:200]
-        
-        excluded_params = {'state', 'tool_call_id'}
-        for key, value in kwargs.items():
-            if key not in excluded_params:
-                log_kwargs[key] = str(value)[:200]
-        
-        start_time = time.time()
-        
-        try:
-            log_data = {
-                "event": "tool_call_start",
-                "tool_name": tool_name,
-                "tool_call_id": tool_call_id,
-                "timestamp": datetime.now().isoformat(),
-                "args": log_args,
-                "kwargs": log_kwargs
-            }
-            logging.info(f"TOOL_CALL_START: {json.dumps(log_data, default=str)}")
-            
-            result = await func(*args, **kwargs)
-            execution_time = time.time() - start_time
-            
-            log_data = {
-                "event": "tool_call_end",
-                "tool_name": tool_name,
-                "tool_call_id": tool_call_id,
-                "timestamp": datetime.now().isoformat(),
-                "execution_time_ms": round(execution_time * 1000, 2),
-                "result_type": type(result).__name__,
-                "result_preview": str(result)[:500] if result is not None else None
-            }
-            logging.info(f"TOOL_CALL_END: {json.dumps(log_data, default=str)}")
-            
-            return result
-        except Exception as e:
-            execution_time = time.time() - start_time
-            log_data = {
-                "event": "tool_call_error",
-                "tool_name": tool_name,
-                "tool_call_id": tool_call_id,
-                "timestamp": datetime.now().isoformat(),
-                "execution_time_ms": round(execution_time * 1000, 2),
-                "error_type": type(e).__name__,
-                "error_message": str(e)
-            }
-            logging.error(f"TOOL_CALL_ERROR: {json.dumps(log_data, default=str)}")
-            raise
-    
-    return wrapper
+from src.deepagents.unified_logging import log_tool_call
 
 load_dotenv()
 

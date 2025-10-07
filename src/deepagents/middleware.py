@@ -13,57 +13,40 @@ from src.deepagents.state import PlanningState, FilesystemState
 from src.deepagents.tools import write_todos, ls, read_file, write_file, edit_file
 from src.deepagents.prompts import WRITE_TODOS_SYSTEM_PROMPT, TASK_SYSTEM_PROMPT, FILESYSTEM_SYSTEM_PROMPT, TASK_TOOL_DESCRIPTION, BASE_AGENT_PROMPT
 from src.deepagents.types import SubAgent, CustomSubAgent
-from src.deepagents.logging import log_tool_call, log_subagent_call, set_agent_context, get_tool_logger, get_enhanced_logger
+from src.deepagents.unified_logging import log_tool_call, log_subagent_call, set_agent_context, get_unified_logger
 
 ###########################
 # Tool Call Logging Middleware
 ###########################
 
 class ToolCallLoggingMiddleware(AgentMiddleware):
-    """Enhanced middleware to log all tool calls at the agent level with context."""
+    """Simplified middleware to log all tool calls at the agent level with context."""
     
     def __init__(self, agent_type: str = "main_agent", agent_id: str = None):
         """Initialize with agent context."""
         self.agent_type = agent_type
         self.agent_id = agent_id or f"agent_{id(self)}"
+        self.logger = get_unified_logger()
         set_agent_context(self.agent_type, self.agent_id)
     
     def modify_tool_call(self, tool_call, agent_state):
-        """Log tool calls before they are executed with enhanced context."""
-        
-        try:
-            logger = get_enhanced_logger()
-            tool_name = tool_call.get("name", "unknown")
-            tool_call_id = tool_call.get("id", "unknown")
+        """Log tool calls before they are executed with unified context."""
+        tool_name = tool_call.get("name", "unknown")
+        tool_call_id = tool_call.get("id", "unknown")
 
-            log_data = {
-                "event": "agent_tool_call",
-                "tool_name": tool_name,
-                "tool_call_id": tool_call_id,
-                "timestamp": datetime.now().isoformat(),
-                "args": tool_call.get("args", {}),
-                "agent_context": {
-                    "agent_type": self.agent_type,
-                    "agent_id": self.agent_id,
-                    "middleware": "ToolCallLoggingMiddleware"
-                }
-            }
-            logger.logger.info(f"AGENT_TOOL_CALL: {json.dumps(log_data, default=str)}")
-        except Exception:
-            logger = get_tool_logger()
-            tool_name = tool_call.get("name", "unknown")
-            tool_call_id = tool_call.get("id", "unknown")
-            
-            log_data = {
-                "event": "agent_tool_call",
-                "tool_name": tool_name,
-                "tool_call_id": tool_call_id,
-                "timestamp": datetime.now().isoformat(),
-                "args": tool_call.get("args", {}),
+        log_data = {
+            "event": "agent_tool_call",
+            "tool_name": tool_name,
+            "tool_call_id": tool_call_id,
+            "timestamp": datetime.now().isoformat(),
+            "args": tool_call.get("args", {}),
+            "agent_context": {
                 "agent_type": self.agent_type,
-                "agent_id": self.agent_id
+                "agent_id": self.agent_id,
+                "middleware": "ToolCallLoggingMiddleware"
             }
-            logger.logger.info(f"AGENT_TOOL_CALL: {json.dumps(log_data, default=str)}")
+        }
+        self.logger.logger.info(f"AGENT_TOOL_CALL: {json.dumps(log_data, default=str)}")
         
         return tool_call
 
@@ -149,17 +132,13 @@ def _get_agents(
             _tools = _agent["tools"]
         else:
             _tools = default_subagent_tools.copy()
-        # Resolve per-subagent model: can be instance or dict
         if "model" in _agent:
             agent_model = _agent["model"]
             if isinstance(agent_model, dict):
-                # Dictionary settings - create model from config
                 sub_model = init_chat_model(**agent_model)
             else:
-                # Model instance - use directly
                 sub_model = agent_model
         else:
-            # Fallback to main model
             sub_model = model
         if "middleware" in _agent:
             _middleware = [*default_subagent_middleware, *_agent["middleware"]]

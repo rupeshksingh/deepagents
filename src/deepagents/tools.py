@@ -10,8 +10,7 @@ from src.deepagents.prompts import (
     WRITE_FILE_TOOL_DESCRIPTION,
     EDIT_FILE_TOOL_DESCRIPTION,
 )
-from src.deepagents.logging import log_tool_call
-
+from src.deepagents.unified_logging import log_tool_call
 
 @tool(description=WRITE_TODOS_TOOL_DESCRIPTION)
 @log_tool_call
@@ -27,13 +26,11 @@ def write_todos(
         }
     )
 
-
 @tool(description=LIST_FILES_TOOL_DESCRIPTION)
 @log_tool_call
 def ls(state: FilesystemState) -> list[str]:
     """List all files"""
     return list(state.get("files", {}).keys())
-
 
 @tool(description=READ_FILE_TOOL_DESCRIPTION)
 @log_tool_call
@@ -47,39 +44,30 @@ def read_file(
     if file_path not in mock_filesystem:
         return f"Error: File '{file_path}' not found"
 
-    # Get file content
     content = mock_filesystem[file_path]
 
-    # Handle empty file
     if not content or content.strip() == "":
         return "System reminder: File exists but has empty contents"
 
-    # Split content into lines
     lines = content.splitlines()
 
-    # Apply line offset and limit
     start_idx = offset
     end_idx = min(start_idx + limit, len(lines))
 
-    # Handle case where offset is beyond file length
     if start_idx >= len(lines):
         return f"Error: Line offset {offset} exceeds file length ({len(lines)} lines)"
 
-    # Format output with line numbers (cat -n format)
     result_lines = []
     for i in range(start_idx, end_idx):
         line_content = lines[i]
 
-        # Truncate lines longer than 2000 characters
         if len(line_content) > 2000:
             line_content = line_content[:2000]
 
-        # Line numbers start at 1, so add 1 to the index
         line_number = i + 1
         result_lines.append(f"{line_number:6d}\t{line_content}")
 
     return "\n".join(result_lines)
-
 
 @tool(description=WRITE_FILE_TOOL_DESCRIPTION)
 @log_tool_call
@@ -100,7 +88,6 @@ def write_file(
         }
     )
 
-
 @tool(description=EDIT_FILE_TOOL_DESCRIPTION)
 @log_tool_call
 def edit_file(
@@ -113,18 +100,14 @@ def edit_file(
 ) -> Union[Command, str]:
     """Write to a file."""
     mock_filesystem = state.get("files", {})
-    # Check if file exists in mock filesystem
     if file_path not in mock_filesystem:
         return f"Error: File '{file_path}' not found"
 
-    # Get current file content
     content = mock_filesystem[file_path]
 
-    # Check if old_string exists in the file
     if old_string not in content:
         return f"Error: String not found in file: '{old_string}'"
 
-    # If not replace_all, check for uniqueness
     if not replace_all:
         occurrences = content.count(old_string)
         if occurrences > 1:
@@ -132,7 +115,6 @@ def edit_file(
         elif occurrences == 0:
             return f"Error: String not found in file: '{old_string}'"
 
-    # Perform the replacement
     if replace_all:
         new_content = content.replace(old_string, new_string)
         replacement_count = content.count(old_string)
@@ -140,10 +122,9 @@ def edit_file(
     else:
         new_content = content.replace(
             old_string, new_string, 1
-        )  # Replace only first occurrence
+        )
         result_msg = f"Successfully replaced string in '{file_path}'"
 
-    # Update the mock filesystem
     mock_filesystem[file_path] = new_content
     return Command(
         update={
