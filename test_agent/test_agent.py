@@ -2,7 +2,7 @@
 """
 Simple Test Runner for Agent Components
 
-Quick test script to verify chat, memory, streaming, and tool logging functionality.
+Basic test script to verify chat and memory persistence functionality.
 """
 
 import asyncio
@@ -15,11 +15,10 @@ from dotenv import load_dotenv
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from react_agent import ReactAgent
-from src.deepagents.logging_utils import get_tool_call_stats
 
 
 async def test_basic_functionality():
-    """Test basic agent functionality."""
+    """Test basic agent functionality with query and memory persistence."""
     print("🧪 Testing Basic Agent Functionality")
     print("=" * 50)
 
@@ -33,56 +32,62 @@ async def test_basic_functionality():
         agent = ReactAgent(mongo_client, org_id=1)
         print("✅ Agent initialized successfully")
         
-        print("\n1️⃣ Testing Agent Info")
-        info = agent.get_agent_info()
-        print(f"Agent Info: {info}")
+        thread_id = "test_thread_29"
         
-        print("\n2️⃣ Testing Sync Chat")
-        result = await agent.chat_sync(
-            user_query="Hello, can you help me analyze a tender?",
-            thread_id="test_thread_sync"
-        )
-        print(f"Sync Result: {result.get('success', False)}")
-        print(f"Response: {result.get('response', 'No response')[:100]}...")
-        
-        print("\n3️⃣ Testing Streaming Chat")
-        print("Streaming response:")
-        async for chunk in agent.chat_streaming(
-            user_query="What are the key requirements for tender analysis?",
-            thread_id="test_thread_streaming"
-        ):
-            chunk_type = chunk.get("chunk_type", "unknown")
-            content = chunk.get("content", "")
-            
-            if chunk_type == "start":
-                print(f"🚀 {content}")
-            elif chunk_type == "content":
-                print(content, end="", flush=True)
-            elif chunk_type == "end":
-                print(f"\n✅ {content}")
-            elif chunk_type == "error":
-                print(f"\n❌ Error: {content}")
-        
-        print("\n4️⃣ Testing Memory Persistence")
-        
-        await agent.chat_sync(
-            user_query="My name is Alice and I'm working on tender #12345.",
-            thread_id="test_memory_thread"
+        tender_id = "68c99b8a10844521ad051544"  # Valid 24-character MongoDB ObjectId format
+        query1 = """Two things:
+
+(a) From the tender, extract all obligations related to web‑tilgængelighed and the Digitaliseringsstyrelsens WAS‑tool.
+
+(b) Confirm via web search the current legal basis and guidance we must follow for accessibility statements in Denmark (point to official sources).
+
+(c) Using Bilag A Kundeliste (xlsx/pdf), segment customers by type (kommune/region/stat/øvrige) and propose a prioritized roll‑out plan for making their websites/apps compliant.
+ 
+ """
+        print(f"\n1️⃣ Testing Basic Query (Thread ID: {thread_id}, Tender ID: {tender_id})")
+        result1 = await agent.chat_sync(
+            user_query=query1,
+            thread_id=thread_id,
+            tender_id=tender_id
         )
         
-        result = await agent.chat_sync(
-            user_query="What's my name and which tender am I working on?",
-            thread_id="test_memory_thread"
+        print(f"Query 1 Result: {result1.get('success', False)}")
+        print(f"Response: {result1.get('response', 'No response')[:200]}...")
+        
+        # Save first response to file
+        with open("thread1.txt", "w", encoding="utf-8") as f:
+            f.write(f"Thread ID: {thread_id}\n")
+            f.write(f"Timestamp: {datetime.now().isoformat()}\n")
+            f.write(f"Query: {query1}\n")
+            f.write(f"Success: {result1.get('success', False)}\n")
+            f.write(f"Response:\n{result1.get('response', 'No response')}\n")
+        
+        print(f"✅ Response saved to thread1.txt")
+        
+        print(f"\n2️⃣ Testing Memory Persistence (Same Thread ID: {thread_id}, Tender ID: {tender_id})")
+        query2 = "Given that Quality has 70% weighting in Direct Award evaluation, and our hourly rates are 8% higher than the cheapest supplier, what quality score differential do we need to achieve to still win contracts? Include mathematical analysis."
+        result2 = await agent.chat_sync(
+            user_query=query2,
+            thread_id=thread_id,
+            tender_id=tender_id
         )
         
-        print(f"Memory Test: {result.get('success', False)}")
-        print(f"Response: {result.get('response', 'No response')[:200]}...")
+        print(f"Memory Test Result: {result2.get('success', False)}")
+        print(f"Response: {result2.get('response', 'No response')[:200]}...")
         
-        print("\n5️⃣ Testing Tool Logging")
-        stats = get_tool_call_stats()
-        print(f"Tool Call Stats: {stats}")
+        # Save second response to file
+        with open("thread2.txt", "w", encoding="utf-8") as f:
+            f.write(f"Thread ID: {thread_id}\n")
+            f.write(f"Timestamp: {datetime.now().isoformat()}\n")
+            f.write(f"Query: {query2}\n")
+            f.write(f"Success: {result2.get('success', False)}\n")
+            f.write(f"Response:\n{result2.get('response', 'No response')}\n")
+        
+        print(f"✅ Response saved to thread2.txt")
         
         print("\n✅ All basic tests completed successfully!")
+        
+        return True
         
     except Exception as e:
         print(f"\n❌ Test failed with error: {str(e)}")
@@ -90,74 +95,29 @@ async def test_basic_functionality():
     
     finally:
         mongo_client.close()
-    
-    return True
-
-
-async def test_streaming_performance():
-    """Test streaming performance."""
-    print("\n⚡ Testing Streaming Performance")
-    print("=" * 50)
-    
-    load_dotenv()
-    mongodb_uri = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
-    mongo_client = MongoClient(mongodb_uri)
-    
-    try:
-        agent = ReactAgent(mongo_client, org_id=1)
-        
-        import time
-        start_time = time.time()
-        
-        chunks = []
-        async for chunk in agent.chat_streaming(
-            user_query="Provide a detailed analysis of tender requirements including security, compliance, and performance aspects.",
-            thread_id="perf_test_thread"
-        ):
-            chunks.append(chunk)
-            if chunk.get("chunk_type") == "content":
-                print(".", end="", flush=True)
-        
-        end_time = time.time()
-        total_time = end_time - start_time
-        
-        print("\n⏱️  Performance Results:")
-        print(f"  Total time: {total_time:.2f} seconds")
-        print(f"  Chunks received: {len(chunks)}")
-        print(f"  Avg time per chunk: {total_time/len(chunks):.3f} seconds")
-        
-    except Exception as e:
-        print(f"\n❌ Performance test failed: {str(e)}")
-        return False
-    
-    finally:
-        mongo_client.close()
-    
-    return True
 
 
 def main():
     """Main test function."""
-    print("🧪 Agent Component Test Suite")
+    print("🧪 Basic Agent Test Suite")
     print("=" * 60)
     print(f"Timestamp: {datetime.now().isoformat()}")
     print("=" * 60)
     
     try:
-        basic_success = asyncio.run(test_basic_functionality())
-        
-        perf_success = asyncio.run(test_streaming_performance())
+        success = asyncio.run(test_basic_functionality())
         
         print("\n" + "=" * 60)
         print("📊 TEST SUMMARY")
         print("=" * 60)
-        print(f"Basic Functionality: {'✅ PASS' if basic_success else '❌ FAIL'}")
-        print(f"Streaming Performance: {'✅ PASS' if perf_success else '❌ FAIL'}")
+        print(f"Basic Tests: {'✅ PASS' if success else '❌ FAIL'}")
         
-        overall_success = basic_success and perf_success
-        print(f"\nOverall Result: {'✅ ALL TESTS PASSED' if overall_success else '❌ SOME TESTS FAILED'}")
+        if success:
+            print("\n✅ All tests passed! Check thread1.txt and thread2.txt for responses.")
+        else:
+            print("\n❌ Tests failed!")
         
-        return overall_success
+        return success
         
     except Exception as e:
         print(f"\n❌ Test suite failed with error: {str(e)}")

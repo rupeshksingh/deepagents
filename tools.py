@@ -920,11 +920,15 @@ async def risk_assessment_analyzer(
         return {"error": f"Risk assessment analysis failed: {str(e)}"}
 
 REACT_TOOLS = [
-    consult_tender_manifest,
+    competitive_positioning_analyzer,
+    risk_assessment_analyzer
+]
+REACT_TOOLS1 = [ consult_tender_manifest,
     targeted_hybrid_search,
     iterative_document_analyzer,
     web_search,
     proposal_scoring_analyzer,
     competitive_positioning_analyzer,
     risk_assessment_analyzer,
+
 ]

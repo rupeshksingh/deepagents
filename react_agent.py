@@ -12,12 +12,13 @@ from datetime import datetime, timezone
 from typing import AsyncGenerator, Dict, Any, Optional, List
 
 from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
 from langgraph.checkpoint.mongodb import MongoDBSaver
 from pymongo import MongoClient
 
 from src.deepagents.graph import async_create_deep_agent
 from src.deepagents.logging_utils import log_query_start, log_query_end, set_agent_context
-from tools import REACT_TOOLS
+from tools import REACT_TOOLS, REACT_TOOLS1
 from prompts import (
     TENDER_ANALYSIS_SYSTEM_PROMPT,
     DOCUMENT_ANALYZER_PROMPT,
@@ -47,7 +48,7 @@ class ReactAgent:
             db_name=self.db_name,
         )
         
-        self.model = ChatOpenAI(model="gpt-5")
+        self.model = ChatAnthropic(model="claude-sonnet-4-5-20250929")
         
         set_agent_context("react_agent", f"react_agent_{org_id}")
         
@@ -59,32 +60,35 @@ class ReactAgent:
         """Create the deep agent graph with custom tools and subagents."""
         try:
             tools = REACT_TOOLS
+            tools1 = REACT_TOOLS1
+            
+
 
             subagents = [
                 {
                     "name": "document-analyzer",
                     "description": "Specialized agent for analyzing tender documents, extracting key information, and identifying compliance requirements.",
                     "prompt": DOCUMENT_ANALYZER_PROMPT,
-                    "tools": tools
+                    "tools": tools1
                 },
                 {
                     "name": "research-agent", 
                     "description": "Specialized agent for conducting research on tender-related topics, market analysis, and competitive intelligence.",
                     "prompt": RESEARCH_AGENT_PROMPT,
-                    "tools": tools
+                    "tools": tools1
                 },
                 {
                     "name": "compliance-checker",
                     "description": "Specialized agent for checking compliance requirements, identifying gaps, and ensuring tender submissions meet all criteria.",
                     "prompt": COMPLIANCE_CHECKER_PROMPT,
-                    "tools": tools
+                    "tools": tools1
                 }
             ]
 
             agent_graph = async_create_deep_agent(
                 tools=tools,
-                instructions=TENDER_ANALYSIS_SYSTEM_PROMPT,
                 subagents=subagents,
+                instructions=TENDER_ANALYSIS_SYSTEM_PROMPT,
                 model=self.model,
                 checkpointer=self.checkpointer
             )
