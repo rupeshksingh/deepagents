@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from react_agent import ReactAgent
-from src.deepagents.unified_logging import get_tool_call_stats
+from src.deepagents.logging_utils import get_tool_call_stats
 
 
 async def test_basic_functionality():

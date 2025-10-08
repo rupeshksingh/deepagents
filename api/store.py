@@ -1,527 +1,687 @@
-from datetime import datetime, timezone
-from typing import Any, Optional
-import asyncio
+"""
+MongoDB store for API operations.
+Handles all database operations for users, chats, and messages.
+Integrates with ReactAgent for message processing.
+"""
+
 import logging
-from pymongo import MongoClient
+from datetime import datetime, timezone
+from typing import Optional, AsyncGenerator
+from pymongo import MongoClient, ASCENDING, DESCENDING
 from bson import ObjectId
+
 from api.models import (
-    QueryCreateRequest,
-    ConversationCreateRequest,
-    QueryResponse, 
-    ConversationResponse,
-    PaginatedQueryResponse,
-    PaginatedConversationResponse,
-    PaginatedUserQueryResponse,
-    StreamingQueryResponse,
-    UserQueryParams,
-    QueryStatus,
-    ConversationQueryParams
+    UserResponse,
+    ChatResponse,
+    MessageResponse,
+    ChatCreateRequest,
+    MessageCreateRequest,
+    PaginatedResponse,
+    StreamChunkResponse,
+    MessageRole,
+    MessageStatus,
+    StreamChunkType
+)
+from api.utils import (
+    generate_chat_id,
+    generate_thread_id,
+    calculate_pagination,
+    validate_object_id,
+    validate_uuid
 )
 from react_agent import ReactAgent
 
 logger = logging.getLogger(__name__)
 
-class QueryStore:
-    """Store class for managing query operations with MongoDB and agent services"""
+
+class ApiStore:
+    """
+    Store class for managing all API database operations.
+    Handles users, chats, and messages with MongoDB persistence.
+    """
     
-    def __init__(self, client: MongoClient):
+    def __init__(self, client: MongoClient, db_name: str = "org_1"):
+        """
+        Initialize the API store with MongoDB client.
+        
+        Args:
+            client: MongoDB client instance
+            db_name: Database name to use
+        """
         self.client = client
-        self.db = client["org_1"]
-        self.queries_collection = self.db["proposal_assistant_queries"]
-        self.conversations_collection = self.db["proposal_assistant_chat"]
+        self.db = client[db_name]
+
         self.users_collection = self.db["proposal_assistant_users"]
+        self.chats_collection = self.db["proposal_assistant_chat"]
+        self.messages_collection = self.db["proposal_assistant_messages"]
         
-        self.agents = {}
+        self.agent = None
         
-    def _get_agent(self, org_id: int = 1) -> ReactAgent:
-        """Get or create a ReactAgent instance for the organization"""
-        if org_id not in self.agents:
-            self.agents[org_id] = ReactAgent(self.client, org_id)
-        return self.agents[org_id]
+        self._setup_indexes()
+        
+        logger.info(f"ApiStore initialized with database: {db_name}")
     
-    def _update_query(
-        self, 
-        query_id: str | ObjectId, 
-        update_data: dict[str, Any], 
-        return_document: bool = False
-    ) -> Optional[dict[str, Any]]:
-        """Update a query document"""
-        if isinstance(query_id, str):
-            query_id = ObjectId(query_id)
+    def _setup_indexes(self):
+        """Create necessary indexes for performance"""
+        try:
+            self.users_collection.create_index("user_id", unique=True)
             
-        update_data["last_modified"] = datetime.now(timezone.utc).replace(tzinfo=None)
-        
-        if return_document:
-            return self.queries_collection.find_one_and_update(
-                {"_id": query_id}, 
-                {"$set": update_data}, 
-                return_document=True
-            )
-        else:
-            self.queries_collection.update_one({"_id": query_id}, {"$set": update_data})
-            return None
+            self.chats_collection.create_index("chat_id", unique=True)
+            self.chats_collection.create_index([("user_id", ASCENDING), ("created_at", DESCENDING)])
+            
+            self.messages_collection.create_index([("chat_id", ASCENDING), ("created_at", ASCENDING)])
+            self.messages_collection.create_index("user_id")
+            
+            logger.info("Database indexes created successfully")
+        except Exception as e:
+            logger.error(f"Error creating indexes: {str(e)}")
     
-    async def create_conversation(self, conversation_request: ConversationCreateRequest, org_id: int = 1) -> ConversationResponse:
-        """Create a new conversation"""
+    def _get_agent(self) -> ReactAgent:
+        """
+        Get or create a ReactAgent instance.
+        Agent is cached for reuse.
+        
+        Returns:
+            ReactAgent: The agent instance
+        """
+        if self.agent is None:
+            self.agent = ReactAgent(self.client, org_id=1)
+            logger.info("ReactAgent instance created")
+        return self.agent
+    
+    # ========================================================================
+    # User Operations
+    # ========================================================================
+    
+    def get_or_create_user(self, user_id: str) -> UserResponse:
+        """
+        Get user by ID, or create if doesn't exist.
+        
+        Args:
+            user_id: The user identifier
+            
+        Returns:
+            UserResponse: User information
+        """
         try:
             current_time = datetime.now(timezone.utc).replace(tzinfo=None)
             
-            conversation_doc = {
-                "name": conversation_request.name,
-                "created_at": current_time,
-                "org_id": org_id,
-                "query_count": 0
-            }
+            user_doc = self.users_collection.find_one({"user_id": user_id})
             
-            result = self.conversations_collection.insert_one(conversation_doc)
-            conversation_id = str(result.inserted_id)
-            
-            return ConversationResponse(
-                id=conversation_id,
-                name=conversation_request.name,
-                created_at=current_time,
-                query_count=0
-            )
-            
-        except Exception as e:
-            logger.error(f"Error creating conversation: {str(e)}")
-            raise Exception(f"Failed to create conversation: {str(e)}")
-
-    async def create_streaming_query(self, query_request: QueryCreateRequest, org_id: int = 1):
-        """Create a streaming query with automatic conversation management"""
-        try:
-            conversation_id = query_request.conversation_id
-            
-            if query_request.create_new_conversation or not conversation_id:
-                conversation_response = await self.create_conversation(
-                    ConversationCreateRequest(name=f"Chat with {query_request.user_id or 'User'}"), 
-                    org_id
+            if user_doc:
+                self.users_collection.update_one(
+                    {"user_id": user_id},
+                    {"$set": {"last_active": current_time}}
                 )
-                conversation_id = conversation_response.id
-            
-            if not self.conversations_collection.find_one({"_id": ObjectId(conversation_id)}):
-                raise Exception(f"Conversation {conversation_id} not found")
-            
-            current_time = datetime.now(timezone.utc).replace(tzinfo=None)
-            
-            query_doc = {
-                "conversation_id": conversation_id,
-                "query_text": query_request.query_text,
-                "tender_id": query_request.tender_id,
-                "user_id": query_request.user_id,
-                "status": QueryStatus.PENDING.value,
-                "response_text": None,
-                "error_message": None,
-                "created_at": current_time,
-                "completed_at": None,
-                "org_id": org_id,
-                "processing_started_at": None,
-                "processing_time_ms": None
-            }
-            
-            result = self.queries_collection.insert_one(query_doc)
-            query_id = str(result.inserted_id)
-
-            self.conversations_collection.update_one(
-                {"_id": ObjectId(conversation_id)},
-                {"$inc": {"query_count": 1}}
-            )
-            
-            async for chunk in self._process_streaming_query(query_id, conversation_id, org_id):
-                yield chunk
-            
-        except Exception as e:
-            logger.error(f"Error creating streaming query: {str(e)}")
-            raise Exception(f"Failed to create streaming query: {str(e)}")
-
-    async def create_query(self, conversation_id: str, query_request: QueryCreateRequest, org_id: int = 1) -> QueryResponse:
-        """Create a new query and start processing it asynchronously"""
-        try:
-            if not self.conversations_collection.find_one({"_id": ObjectId(conversation_id)}):
-                raise Exception(f"Conversation {conversation_id} not found")
-            
-            current_time = datetime.now(timezone.utc).replace(tzinfo=None)
-            
-            query_doc = {
-                "conversation_id": conversation_id,
-                "query_text": query_request.query_text,
-                "tender_id": query_request.tender_id,
-                "status": QueryStatus.PENDING.value,
-                "response_text": None,
-                "error_message": None,
-                "created_at": current_time,
-                "completed_at": None,
-                "org_id": org_id,
-                "processing_started_at": None,
-                "processing_time_ms": None
-            }
-            
-            result = self.queries_collection.insert_one(query_doc)
-            query_id = str(result.inserted_id)
-
-            self.conversations_collection.update_one(
-                {"_id": ObjectId(conversation_id)},
-                {"$inc": {"query_count": 1}}
-            )
-
-            asyncio.create_task(self._process_query_async(query_id, org_id))
-            
-            return QueryResponse(
-                id=query_id,
-                conversation_id=conversation_id,
-                query_text=query_request.query_text,
-                response_text=None,
-                status=QueryStatus.PENDING,
-                tender_id=query_request.tender_id,
-                created_at=current_time,
-                completed_at=None,
-                error_message=None,
-                processing_time_ms=None
-            )
-            
-        except Exception as e:
-            logger.error(f"Error creating query: {str(e)}")
-            raise Exception(f"Failed to create query: {str(e)}")
-    
-    async def _process_query_async(self, query_id: str, org_id: int):
-        """Process query asynchronously using the AgentService"""
-        try:
-            self._update_query(query_id, {
-                "status": QueryStatus.PROCESSING.value,
-                "processing_started_at": datetime.now(timezone.utc).replace(tzinfo=None)
-            })
-            
-            query_doc = self.queries_collection.find_one({"_id": ObjectId(query_id)})
-            if not query_doc:
-                logger.error(f"Query not found: {query_id}")
-                return
-            
-            start_time = datetime.now()
-            
-            thread_id = f"conv_{query_doc['conversation_id']}"
-            
-            result = await self._get_agent(org_id).chat_sync(
-                user_query=query_doc["query_text"],
-                thread_id=thread_id,
-                tender_id=query_doc.get("tender_id"),
-                user_id=query_doc.get("user_id")
-            )
-            
-            end_time = datetime.now()
-            processing_time_ms = int((end_time - start_time).total_seconds() * 1000)
-            
-            if result["success"]:
-                self._update_query(query_id, {
-                    "status": QueryStatus.COMPLETED.value,
-                    "response_text": result["response"],
-                    "completed_at": datetime.now(timezone.utc).replace(tzinfo=None),
-                    "processing_time_ms": processing_time_ms
-                })
-                logger.info(f"Successfully processed query {query_id} in {processing_time_ms}ms")
+                user_doc["last_active"] = current_time
             else:
-                self._update_query(query_id, {
-                    "status": QueryStatus.FAILED.value,
-                    "error_message": result.get("error", "Unknown error"),
-                    "completed_at": datetime.now(timezone.utc).replace(tzinfo=None),
-                    "processing_time_ms": processing_time_ms
-                })
-                logger.error(f"Failed to process query {query_id}: {result.get('error')}")
+                user_doc = {
+                    "user_id": user_id,
+                    "name": None,
+                    "email": None,
+                    "created_at": current_time,
+                    "last_active": current_time
+                }
+                self.users_collection.insert_one(user_doc)
+                logger.info(f"Created new user: {user_id}")
             
-        except Exception as e:
-            logger.error(f"Error processing query {query_id}: {str(e)}")
-            self._update_query(query_id, {
-                "status": QueryStatus.FAILED.value,
-                "error_message": str(e),
-                "completed_at": datetime.now(timezone.utc).replace(tzinfo=None)
-            })
-
-    async def _process_streaming_query(self, query_id: str, conversation_id: str, org_id: int):
-        """Process query with streaming response using AgentService"""
-        try:
-            self._update_query(query_id, {
-                "status": QueryStatus.PROCESSING.value,
-                "processing_started_at": datetime.now(timezone.utc).replace(tzinfo=None)
-            })
-            
-            yield StreamingQueryResponse(
-                query_id=query_id,
-                conversation_id=conversation_id,
-                chunk_type="start",
-                status=QueryStatus.PROCESSING,
-                metadata={"message": "Processing started"}
+            return UserResponse(
+                user_id=user_doc["user_id"],
+                name=user_doc.get("name"),
+                email=user_doc.get("email"),
+                created_at=user_doc["created_at"],
+                last_active=user_doc["last_active"]
             )
             
-            query_doc = self.queries_collection.find_one({"_id": ObjectId(query_id)})
-            if not query_doc:
-                logger.error(f"Query not found: {query_id}")
-                yield StreamingQueryResponse(
-                    query_id=query_id,
-                    conversation_id=conversation_id,
-                    chunk_type="error",
-                    status=QueryStatus.FAILED,
-                    content="Query not found"
-                )
-                return
-
-            start_time = datetime.now()
-            
-            thread_id = f"conv_{conversation_id}"
-            
-            full_response = ""
-            async for chunk in self._get_agent(org_id).chat_streaming(
-                user_query=query_doc["query_text"],
-                thread_id=thread_id,
-                tender_id=query_doc.get("tender_id"),
-                user_id=query_doc.get("user_id")
-            ):
-                if chunk["chunk_type"] == "content":
-                    full_response += chunk["content"] + " "
-                    yield StreamingQueryResponse(
-                        query_id=query_id,
-                        conversation_id=conversation_id,
-                        chunk_type="content",
-                        content=chunk["content"],
-                        status=QueryStatus.PROCESSING
-                    )
-                elif chunk["chunk_type"] == "end":
-                    end_time = datetime.now()
-                    processing_time_ms = int((end_time - start_time).total_seconds() * 1000)
-                    
-                    self._update_query(query_id, {
-                        "status": QueryStatus.COMPLETED.value,
-                        "response_text": chunk.get("total_response", full_response.strip()),
-                        "completed_at": datetime.now(timezone.utc).replace(tzinfo=None),
-                        "processing_time_ms": processing_time_ms
-                    })
-                    
-                    yield StreamingQueryResponse(
-                        query_id=query_id,
-                        conversation_id=conversation_id,
-                        chunk_type="end",
-                        status=QueryStatus.COMPLETED,
-                        metadata={"processing_time_ms": processing_time_ms}
-                    )
-                elif chunk["chunk_type"] == "error":
-                    self._update_query(query_id, {
-                        "status": QueryStatus.FAILED.value,
-                        "error_message": chunk.get("error", "Unknown error"),
-                        "completed_at": datetime.now(timezone.utc).replace(tzinfo=None)
-                    })
-                    
-                    yield StreamingQueryResponse(
-                        query_id=query_id,
-                        conversation_id=conversation_id,
-                        chunk_type="error",
-                        status=QueryStatus.FAILED,
-                        content=chunk["content"]
-                    )
-                    return
-            
-            logger.info(f"Successfully processed streaming query {query_id}")
-            
         except Exception as e:
-            logger.error(f"Error processing streaming query {query_id}: {str(e)}")
-            self._update_query(query_id, {
-                "status": QueryStatus.FAILED.value,
-                "error_message": str(e),
-                "completed_at": datetime.now(timezone.utc).replace(tzinfo=None)
-            })
-            
-            yield StreamingQueryResponse(
-                query_id=query_id,
-                conversation_id=conversation_id,
-                chunk_type="error",
-                status=QueryStatus.FAILED,
-                content=str(e)
-            )
+            logger.error(f"Error in get_or_create_user: {str(e)}")
+            raise Exception(f"Failed to get/create user: {str(e)}")
     
-    def get_query_by_id(self, query_id: str) -> Optional[QueryResponse]:
-        """Get a single query by ID"""
+    def update_user_activity(self, user_id: str) -> None:
+        """
+        Update user's last active timestamp.
+        
+        Args:
+            user_id: The user identifier
+        """
         try:
-            query_doc = self.queries_collection.find_one({"_id": ObjectId(query_id)})
-            if not query_doc:
-                return None
-            
-            return self._convert_to_query_response(query_doc)
-            
+            current_time = datetime.now(timezone.utc).replace(tzinfo=None)
+            self.users_collection.update_one(
+                {"user_id": user_id},
+                {"$set": {"last_active": current_time}}
+            )
         except Exception as e:
-            logger.error(f"Error getting query {query_id}: {str(e)}")
-            return None
-
-    def get_conversation_by_id(self, conversation_id: str) -> Optional[ConversationResponse]:
-        """Get a single conversation by ID"""
-        try:
-            conversation_doc = self.conversations_collection.find_one({"_id": ObjectId(conversation_id)})
-            if not conversation_doc:
-                return None
+            logger.warning(f"Error updating user activity: {str(e)}")
+    
+    # ========================================================================
+    # Chat Operations
+    # ========================================================================
+    
+    def create_chat(
+        self, 
+        user_id: str, 
+        request: ChatCreateRequest
+    ) -> ChatResponse:
+        """
+        Create a new chat for a user.
+        
+        Args:
+            user_id: The user identifier
+            request: Chat creation request
             
-            return ConversationResponse(
-                id=str(conversation_doc["_id"]),
-                name=conversation_doc.get("name"),
-                created_at=conversation_doc["created_at"],
-                query_count=conversation_doc.get("query_count", 0)
+        Returns:
+            ChatResponse: Created chat information
+        """
+        try:
+            current_time = datetime.now(timezone.utc).replace(tzinfo=None)
+            chat_id = generate_chat_id()
+            
+            title = request.title or f"Chat - {current_time.strftime('%Y-%m-%d %H:%M')}"
+            
+            chat_doc = {
+                "chat_id": chat_id,
+                "user_id": user_id,
+                "title": title,
+                "created_at": current_time,
+                "updated_at": current_time,
+                "message_count": 0
+            }
+            
+            self.chats_collection.insert_one(chat_doc)
+            logger.info(f"Created new chat: {chat_id} for user: {user_id}")
+            
+            self.update_user_activity(user_id)
+            
+            return ChatResponse(
+                chat_id=chat_doc["chat_id"],
+                user_id=chat_doc["user_id"],
+                title=chat_doc["title"],
+                created_at=chat_doc["created_at"],
+                updated_at=chat_doc["updated_at"],
+                message_count=chat_doc["message_count"]
             )
             
         except Exception as e:
-            logger.error(f"Error getting conversation {conversation_id}: {str(e)}")
-            return None
-
-    def get_conversations(self, page: int = 1, page_size: int = 50) -> PaginatedConversationResponse:
-        """Get all conversations with pagination"""
-        try:
-            total_count = self.conversations_collection.count_documents({})
-            total_pages = (total_count + page_size - 1) // page_size
+            logger.error(f"Error creating chat: {str(e)}")
+            raise Exception(f"Failed to create chat: {str(e)}")
+    
+    def get_chat(self, chat_id: str) -> Optional[ChatResponse]:
+        """
+        Get a chat by ID.
+        
+        Args:
+            chat_id: The chat identifier
             
+        Returns:
+            ChatResponse: Chat information, or None if not found
+        """
+        try:
+            if not validate_uuid(chat_id):
+                logger.warning(f"Invalid chat_id format: {chat_id}")
+                return None
+            
+            chat_doc = self.chats_collection.find_one({"chat_id": chat_id})
+            
+            if not chat_doc:
+                return None
+            
+            return ChatResponse(
+                chat_id=chat_doc["chat_id"],
+                user_id=chat_doc["user_id"],
+                title=chat_doc["title"],
+                created_at=chat_doc["created_at"],
+                updated_at=chat_doc["updated_at"],
+                message_count=chat_doc.get("message_count", 0)
+            )
+            
+        except Exception as e:
+            logger.error(f"Error getting chat: {str(e)}")
+            return None
+    
+    def list_user_chats(
+        self, 
+        user_id: str, 
+        page: int = 1, 
+        page_size: int = 50
+    ) -> PaginatedResponse[ChatResponse]:
+        """
+        List all chats for a user with pagination.
+        
+        Args:
+            user_id: The user identifier
+            page: Page number (1-indexed)
+            page_size: Number of items per page
+            
+        Returns:
+            PaginatedResponse[ChatResponse]: Paginated list of chats
+        """
+        try:
+            total = self.chats_collection.count_documents({"user_id": user_id})
+            
+            pagination = calculate_pagination(total, page, page_size)
             skip = (page - 1) * page_size
-            cursor = self.conversations_collection.find({}).sort("created_at", -1).skip(skip).limit(page_size)
-            docs = list(cursor)
+            
+            cursor = self.chats_collection.find(
+                {"user_id": user_id}
+            ).sort("updated_at", DESCENDING).skip(skip).limit(page_size)
             
             items = []
-            for doc in docs:
-                items.append(ConversationResponse(
-                    id=str(doc["_id"]),
-                    name=doc.get("name"),
-                    created_at=doc["created_at"],
-                    query_count=doc.get("query_count", 0)
+            for chat_doc in cursor:
+                items.append(ChatResponse(
+                    chat_id=chat_doc["chat_id"],
+                    user_id=chat_doc["user_id"],
+                    title=chat_doc["title"],
+                    created_at=chat_doc["created_at"],
+                    updated_at=chat_doc["updated_at"],
+                    message_count=chat_doc.get("message_count", 0)
                 ))
             
-            return PaginatedConversationResponse(
+            return PaginatedResponse(
                 items=items,
-                total=total_count,
-                page=page,
-                page_size=page_size,
-                total_pages=total_pages
+                total=pagination["total"],
+                page=pagination["page"],
+                page_size=pagination["page_size"],
+                total_pages=pagination["total_pages"],
+                has_more=pagination["has_more"]
             )
             
         except Exception as e:
-            logger.error(f"Error getting conversations: {str(e)}")
-            raise Exception(f"Failed to get conversations: {str(e)}")
+            logger.error(f"Error listing user chats: {str(e)}")
+            raise Exception(f"Failed to list chats: {str(e)}")
     
-    def get_conversation_queries(
-        self, 
-        conversation_id: str,
-        params: ConversationQueryParams
-    ) -> PaginatedQueryResponse:
-        """Get all queries for a conversation with pagination"""
+    def delete_chat(self, chat_id: str) -> bool:
+        """
+        Delete a chat and all its messages.
+        
+        Args:
+            chat_id: The chat identifier
+            
+        Returns:
+            bool: True if deleted, False if not found
+        """
         try:
-            query_filter = {"conversation_id": conversation_id}
+            if not validate_uuid(chat_id):
+                logger.warning(f"Invalid chat_id format: {chat_id}")
+                return False
             
-            if params.status:
-                query_filter["status"] = params.status.value
-                
-            if params.tender_id:
-                query_filter["tender_id"] = params.tender_id
+            self.messages_collection.delete_many({"chat_id": chat_id})
             
-            total_count = self.queries_collection.count_documents(query_filter)
-            total_pages = (total_count + params.page_size - 1) // params.page_size
+            result = self.chats_collection.delete_one({"chat_id": chat_id})
             
-            skip = (params.page - 1) * params.page_size
-            cursor = self.queries_collection.find(query_filter).sort("created_at", -1).skip(skip).limit(params.page_size)
-            docs = list(cursor)
-            
-            items = [self._convert_to_query_response(doc) for doc in docs]
-            
-            return PaginatedQueryResponse(
-                items=items,
-                total=total_count,
-                page=params.page,
-                page_size=params.page_size,
-                total_pages=total_pages,
-                conversation_id=conversation_id
-            )
+            if result.deleted_count > 0:
+                logger.info(f"Deleted chat: {chat_id}")
+                return True
+            else:
+                logger.warning(f"Chat not found: {chat_id}")
+                return False
             
         except Exception as e:
-            logger.error(f"Error getting conversation queries: {str(e)}")
-            raise Exception(f"Failed to get conversation queries: {str(e)}")
+            logger.error(f"Error deleting chat: {str(e)}")
+            raise Exception(f"Failed to delete chat: {str(e)}")
     
-    def get_user_queries(self, user_id: str, params: UserQueryParams) -> PaginatedUserQueryResponse:
-        """Get all queries for a specific user with pagination and filtering"""
+    def update_chat_timestamp(self, chat_id: str) -> None:
+        """
+        Update chat's updated_at timestamp.
+        
+        Args:
+            chat_id: The chat identifier
+        """
         try:
-            query_filter = {"user_id": user_id}
-            
-            if params.status:
-                query_filter["status"] = params.status.value
-                
-            if params.tender_id:
-                query_filter["tender_id"] = params.tender_id
-                
-            if params.conversation_id:
-                query_filter["conversation_id"] = params.conversation_id
-            
-            total_count = self.queries_collection.count_documents(query_filter)
-            total_pages = (total_count + params.page_size - 1) // params.page_size
-            
-            skip = (params.page - 1) * params.page_size
-            cursor = self.queries_collection.find(query_filter).sort("created_at", -1).skip(skip).limit(params.page_size)
-            docs = list(cursor)
-            
-            items = [self._convert_to_query_response(doc) for doc in docs]
-            
-            return PaginatedUserQueryResponse(
-                items=items,
-                total=total_count,
-                page=params.page,
-                page_size=params.page_size,
-                total_pages=total_pages,
-                user_id=user_id
+            current_time = datetime.now(timezone.utc).replace(tzinfo=None)
+            self.chats_collection.update_one(
+                {"chat_id": chat_id},
+                {"$set": {"updated_at": current_time}}
             )
-            
         except Exception as e:
-            logger.error(f"Error getting user queries: {str(e)}")
-            raise Exception(f"Failed to get user queries: {str(e)}")
-
-    def _convert_to_query_response(self, doc: dict) -> QueryResponse:
-        """Convert MongoDB document to QueryResponse"""
-        return QueryResponse(
-            id=str(doc["_id"]),
-            conversation_id=doc["conversation_id"],
-            query_text=doc["query_text"],
-            response_text=doc.get("response_text"),
-            status=QueryStatus(doc["status"]),
-            tender_id=doc.get("tender_id"),
-            user_id=doc.get("user_id"),
-            created_at=doc["created_at"],
-            completed_at=doc.get("completed_at"),
-            error_message=doc.get("error_message"),
-            processing_time_ms=doc.get("processing_time_ms")
-        )
+            logger.warning(f"Error updating chat timestamp: {str(e)}")
     
-    def get_query_stats(self, conversation_id: Optional[str] = None) -> dict[str, Any]:
-        """Get query statistics"""
+    def increment_message_count(self, chat_id: str) -> None:
+        """
+        Increment the message count for a chat.
+        
+        Args:
+            chat_id: The chat identifier
+        """
         try:
-            filter_query = {}
-            if conversation_id:
-                filter_query["conversation_id"] = conversation_id
+            self.chats_collection.update_one(
+                {"chat_id": chat_id},
+                {"$inc": {"message_count": 1}}
+            )
+        except Exception as e:
+            logger.warning(f"Error incrementing message count: {str(e)}")
+    
+    # ========================================================================
+    # Message Operations
+    # ========================================================================
+    
+    def create_message(
+        self,
+        chat_id: str,
+        user_id: str,
+        role: MessageRole,
+        content: str,
+        metadata: Optional[dict] = None
+    ) -> MessageResponse:
+        """
+        Create a new message in a chat.
+        
+        Args:
+            chat_id: The chat identifier
+            user_id: The user identifier
+            role: Message role (user/assistant)
+            content: Message content
+            metadata: Optional metadata
             
-            pipeline = [
-                {"$match": filter_query},
-                {"$group": {
-                    "_id": "$status",
-                    "count": {"$sum": 1}
-                }}
-            ]
+        Returns:
+            MessageResponse: Created message information
+        """
+        try:
+            current_time = datetime.now(timezone.utc).replace(tzinfo=None)
             
-            stats = {}
-            for result in self.queries_collection.aggregate(pipeline):
-                stats[result["_id"]] = result["count"]
-            
-            total_queries = sum(stats.values())
-            
-            return {
-                "total_queries": total_queries,
-                "status_breakdown": stats,
-                "conversation_id": conversation_id
+            message_doc = {
+                "chat_id": chat_id,
+                "user_id": user_id,
+                "role": role.value,
+                "content": content,
+                "status": MessageStatus.COMPLETED.value if role == MessageRole.USER else MessageStatus.PENDING.value,
+                "created_at": current_time,
+                "processing_time_ms": None,
+                "metadata": metadata or {},
+                "error": None
             }
             
+            result = self.messages_collection.insert_one(message_doc)
+            message_id = str(result.inserted_id)
+            
+            self.increment_message_count(chat_id)
+            self.update_chat_timestamp(chat_id)
+            
+            logger.info(f"Created message: {message_id} in chat: {chat_id}")
+            
+            return MessageResponse(
+                message_id=message_id,
+                chat_id=message_doc["chat_id"],
+                user_id=message_doc["user_id"],
+                role=MessageRole(message_doc["role"]),
+                content=message_doc["content"],
+                status=MessageStatus(message_doc["status"]),
+                created_at=message_doc["created_at"],
+                processing_time_ms=message_doc.get("processing_time_ms"),
+                metadata=message_doc.get("metadata"),
+                error=message_doc.get("error")
+            )
+            
         except Exception as e:
-            logger.error(f"Error getting query stats: {str(e)}")
-            return {"error": str(e)}
+            logger.error(f"Error creating message: {str(e)}")
+            raise Exception(f"Failed to create message: {str(e)}")
     
-    def get_agent_stats(self, org_id: int = 1) -> dict[str, Any]:
-        """Get agent statistics and health information"""
+    def get_message(self, message_id: str) -> Optional[MessageResponse]:
+        """
+        Get a message by ID.
+        
+        Args:
+            message_id: The message identifier (ObjectId)
+            
+        Returns:
+            MessageResponse: Message information, or None if not found
+        """
         try:
-            agent = self._get_agent(org_id)
-            return agent.get_agent_info()
+            if not validate_object_id(message_id):
+                logger.warning(f"Invalid message_id format: {message_id}")
+                return None
+            
+            message_doc = self.messages_collection.find_one({"_id": ObjectId(message_id)})
+            
+            if not message_doc:
+                return None
+            
+            return MessageResponse(
+                message_id=str(message_doc["_id"]),
+                chat_id=message_doc["chat_id"],
+                user_id=message_doc["user_id"],
+                role=MessageRole(message_doc["role"]),
+                content=message_doc["content"],
+                status=MessageStatus(message_doc["status"]),
+                created_at=message_doc["created_at"],
+                processing_time_ms=message_doc.get("processing_time_ms"),
+                metadata=message_doc.get("metadata"),
+                error=message_doc.get("error")
+            )
+            
         except Exception as e:
-            logger.error(f"Error getting agent stats: {str(e)}")
-            return {"error": str(e)}
+            logger.error(f"Error getting message: {str(e)}")
+            return None
+
+    def list_chat_messages(
+        self,
+        chat_id: str,
+        page: int = 1,
+        page_size: int = 50
+    ) -> PaginatedResponse[MessageResponse]:
+        """
+        List all messages in a chat with pagination.
+        
+        Args:
+            chat_id: The chat identifier
+            page: Page number (1-indexed)
+            page_size: Number of items per page
+            
+        Returns:
+            PaginatedResponse[MessageResponse]: Paginated list of messages
+        """
+        try:
+            total = self.messages_collection.count_documents({"chat_id": chat_id})
+            
+            pagination = calculate_pagination(total, page, page_size)
+            skip = (page - 1) * page_size
+            
+            cursor = self.messages_collection.find(
+                {"chat_id": chat_id}
+            ).sort("created_at", ASCENDING).skip(skip).limit(page_size)
+            
+            items = []
+            for message_doc in cursor:
+                items.append(MessageResponse(
+                    message_id=str(message_doc["_id"]),
+                    chat_id=message_doc["chat_id"],
+                    user_id=message_doc["user_id"],
+                    role=MessageRole(message_doc["role"]),
+                    content=message_doc["content"],
+                    status=MessageStatus(message_doc["status"]),
+                    created_at=message_doc["created_at"],
+                    processing_time_ms=message_doc.get("processing_time_ms"),
+                    metadata=message_doc.get("metadata"),
+                    error=message_doc.get("error")
+                ))
+            
+            return PaginatedResponse(
+                items=items,
+                total=pagination["total"],
+                page=pagination["page"],
+                page_size=pagination["page_size"],
+                total_pages=pagination["total_pages"],
+                has_more=pagination["has_more"]
+            )
+            
+        except Exception as e:
+            logger.error(f"Error listing chat messages: {str(e)}")
+            raise Exception(f"Failed to list messages: {str(e)}")
+    
+    def update_message_status(
+        self, 
+        message_id: str,
+        status: MessageStatus,
+        content: Optional[str] = None,
+        processing_time_ms: Optional[int] = None,
+        error: Optional[str] = None
+    ) -> None:
+        """
+        Update message status and optionally content.
+        
+        Args:
+            message_id: The message identifier
+            status: New status
+            content: Updated content (for assistant messages)
+            processing_time_ms: Processing time
+            error: Error message if failed
+        """
+        try:
+            update_data = {"status": status.value}
+            
+            if content is not None:
+                update_data["content"] = content
+            if processing_time_ms is not None:
+                update_data["processing_time_ms"] = processing_time_ms
+            if error is not None:
+                update_data["error"] = error
+            
+            self.messages_collection.update_one(
+                {"_id": ObjectId(message_id)},
+                {"$set": update_data}
+            )
+            
+        except Exception as e:
+            logger.error(f"Error updating message status: {str(e)}")
+    
+    # ========================================================================
+    # Streaming Message Processing
+    # ========================================================================
+    
+    async def stream_message(
+        self,
+        chat_id: str,
+        user_id: str,
+        request: MessageCreateRequest
+    ) -> AsyncGenerator[StreamChunkResponse, None]:
+        """
+        Process a user message and stream the assistant's response.
+        
+        Args:
+            chat_id: The chat identifier
+            user_id: The user identifier
+            request: Message creation request
+            
+        Yields:
+            StreamChunkResponse: Streaming chunks
+        """
+        try:
+            user_message = self.create_message(
+                chat_id=chat_id,
+                user_id=user_id,
+                role=MessageRole.USER,
+                content=request.content,
+                metadata=request.metadata
+            )
+            
+            assistant_message = self.create_message(
+                chat_id=chat_id,
+                user_id=user_id,
+                role=MessageRole.ASSISTANT,
+                content="",
+                metadata=request.metadata
+            )
+            
+            self.update_message_status(
+                assistant_message.message_id,
+                MessageStatus.PROCESSING
+            )
+            
+            yield StreamChunkResponse(
+                message_id=assistant_message.message_id,
+                chat_id=chat_id,
+                chunk_type=StreamChunkType.START,
+                status=MessageStatus.PROCESSING
+            )
+            
+            agent = self._get_agent()
+            thread_id = generate_thread_id(chat_id)
+            
+            full_response = ""
+            start_time = datetime.now()
+            
+            try:
+                async for chunk in agent.chat_streaming(
+                    user_query=request.content,
+                    thread_id=thread_id,
+                    tender_id=request.metadata.get("tender_id") if request.metadata else None,
+                user_id=user_id
+                ):
+                    if chunk["chunk_type"] == "content":
+                        content = chunk.get("content", "")
+                        full_response += content + " "
+                        
+                        yield StreamChunkResponse(
+                            message_id=assistant_message.message_id,
+                            chat_id=chat_id,
+                            chunk_type=StreamChunkType.CONTENT,
+                            content=content
+                        )
+                    
+                    elif chunk["chunk_type"] == "end":
+                        end_time = datetime.now()
+                        processing_time_ms = int((end_time - start_time).total_seconds() * 1000)
+                        
+                        final_response = chunk.get("total_response", full_response.strip())
+                        
+                        self.update_message_status(
+                            assistant_message.message_id,
+                            MessageStatus.COMPLETED,
+                            content=final_response,
+                            processing_time_ms=processing_time_ms
+                        )
+                        
+                        yield StreamChunkResponse(
+                            message_id=assistant_message.message_id,
+                            chat_id=chat_id,
+                            chunk_type=StreamChunkType.END,
+                            status=MessageStatus.COMPLETED,
+                            processing_time_ms=processing_time_ms
+                        )
+                    
+                    elif chunk["chunk_type"] == "error":
+                        error_msg = chunk.get("content", "Unknown error")
+                        
+                        self.update_message_status(
+                            assistant_message.message_id,
+                            MessageStatus.FAILED,
+                            error=error_msg
+                        )
+                        
+                        yield StreamChunkResponse(
+                            message_id=assistant_message.message_id,
+                            chat_id=chat_id,
+                            chunk_type=StreamChunkType.ERROR,
+                            status=MessageStatus.FAILED,
+                            error=error_msg
+                        )
+                        return
+            
+            except Exception as e:
+                error_msg = f"Agent processing error: {str(e)}"
+                logger.error(error_msg)
+                
+                self.update_message_status(
+                    assistant_message.message_id,
+                    MessageStatus.FAILED,
+                    error=error_msg
+                )
+                
+                yield StreamChunkResponse(
+                    message_id=assistant_message.message_id,
+                    chat_id=chat_id,
+                    chunk_type=StreamChunkType.ERROR,
+                    status=MessageStatus.FAILED,
+                    error=error_msg
+                )
+            
+        except Exception as e:
+            error_msg = f"Stream processing error: {str(e)}"
+            logger.error(error_msg)
+            
+            yield StreamChunkResponse(
+                message_id="",
+                chat_id=chat_id,
+                chunk_type=StreamChunkType.ERROR,
+                status=MessageStatus.FAILED,
+                error=error_msg
+            )

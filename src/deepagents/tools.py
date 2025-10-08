@@ -10,7 +10,7 @@ from src.deepagents.prompts import (
     WRITE_FILE_TOOL_DESCRIPTION,
     EDIT_FILE_TOOL_DESCRIPTION,
 )
-from src.deepagents.unified_logging import log_tool_call
+from src.deepagents.logging_utils import log_tool_call
 
 @tool(description=WRITE_TODOS_TOOL_DESCRIPTION)
 @log_tool_call

@@ -3,4 +3,4 @@ from src.deepagents.middleware import PlanningMiddleware, FilesystemMiddleware, 
 from src.deepagents.state import DeepAgentState
 from src.deepagents.types import SubAgent, CustomSubAgent
 from src.deepagents.model import get_default_model
-from src.deepagents.unified_logging import get_unified_logger, log_query_start, log_query_end, start_run, end_run, set_agent_context
+from src.deepagents.logging_utils import get_unified_logger, log_query_start, log_query_end, start_run, end_run, set_agent_context

@@ -16,7 +16,7 @@ from langgraph.checkpoint.mongodb import MongoDBSaver
 from pymongo import MongoClient
 
 from src.deepagents.graph import async_create_deep_agent
-from src.deepagents.unified_logging import log_query_start, log_query_end, set_agent_context
+from src.deepagents.logging_utils import log_query_start, log_query_end, set_agent_context
 from tools import REACT_TOOLS
 from prompts import (
     TENDER_ANALYSIS_SYSTEM_PROMPT,
@@ -44,7 +44,7 @@ class ReactAgent:
         
         self.checkpointer = MongoDBSaver(
             client=mongo_client,
-            db_name=self.db_name
+            db_name=self.db_name,
         )
         
         self.model = ChatOpenAI(model="gpt-5")
@@ -315,7 +315,7 @@ class ReactAgent:
             "org_id": self.org_id,
             "agent_initialized": self.agent is not None,
             "checkpointer_type": "MongoDBSaver",
-            "model": "gpt-4o",
+            "model": "gpt-5",
             "mongodb_connected": True,
             "mongodb_database": self.db_name,
             "tools_available": len(REACT_TOOLS) if REACT_TOOLS else 0,

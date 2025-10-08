@@ -13,7 +13,7 @@ from src.deepagents.state import PlanningState, FilesystemState
 from src.deepagents.tools import write_todos, ls, read_file, write_file, edit_file
 from src.deepagents.prompts import WRITE_TODOS_SYSTEM_PROMPT, TASK_SYSTEM_PROMPT, FILESYSTEM_SYSTEM_PROMPT, TASK_TOOL_DESCRIPTION, BASE_AGENT_PROMPT
 from src.deepagents.types import SubAgent, CustomSubAgent
-from src.deepagents.unified_logging import log_tool_call, log_subagent_call, set_agent_context, get_unified_logger
+from src.deepagents.logging_utils import log_tool_call, log_subagent_call, set_agent_context, get_unified_logger
 
 ###########################
 # Tool Call Logging Middleware

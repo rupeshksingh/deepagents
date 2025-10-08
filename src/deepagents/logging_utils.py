@@ -15,7 +15,6 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 from functools import wraps
 
-
 class UnifiedLogger:
     """
     Unified logging system with context tracking and performance monitoring.
@@ -28,7 +27,7 @@ class UnifiedLogger:
     - Performance statistics
     """
     
-    def __init__(self, log_file: str = "logs/unified_tool_calls.log", log_level: int = logging.INFO):
+    def __init__(self, log_file: str = "logs/tool_calls.log", log_level: int = logging.INFO):
         """Initialize the unified logger."""
         self.log_file = log_file
         self.log_level = log_level
@@ -140,7 +139,6 @@ class UnifiedLogger:
         """Log the start of a tool call with full context."""
         log_data = {
             "event": "tool_call_start",
-            "run_id": self.current_run_id,
             "session_id": self.current_session_id,
             "tool_name": tool_name,
             "tool_call_id": tool_call_id,
@@ -165,7 +163,6 @@ class UnifiedLogger:
         
         log_data = {
             "event": "tool_call_end",
-            "run_id": self.current_run_id,
             "session_id": self.current_session_id,
             "tool_name": tool_name,
             "tool_call_id": tool_call_id,
@@ -180,7 +177,6 @@ class UnifiedLogger:
         """Log an error during tool call execution with full context."""
         log_data = {
             "event": "tool_call_error",
-            "run_id": self.current_run_id,
             "session_id": self.current_session_id,
             "tool_name": tool_name,
             "tool_call_id": tool_call_id,
@@ -199,9 +195,7 @@ class UnifiedLogger:
         
         log_data = {
             "event": "subagent_call",
-            "run_id": self.current_run_id,
             "session_id": session_id,
-            "subagent_type": subagent_type,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "description": description[:1000],
             "agent_context": self.current_agent_context
@@ -213,11 +207,9 @@ class UnifiedLogger:
         """Log an agent call."""
         log_data = {
             "event": "agent_call",
-            "run_id": self.current_run_id,
             "session_id": self.current_session_id,
             "agent_type": agent_type,
             "agent_id": agent_id,
-            "subagent_type": subagent_type,
             "description": description,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "agent_context": self.current_agent_context
@@ -228,7 +220,6 @@ class UnifiedLogger:
         """Log a streaming chunk."""
         log_data = {
             "event": "streaming_chunk",
-            "run_id": self.current_run_id,
             "session_id": self.current_session_id,
             "chunk_type": chunk_type,
             "content": content,
@@ -243,7 +234,6 @@ class UnifiedLogger:
         """Log memory operations (checkpointer interactions)."""
         log_data = {
             "event": "memory_operation",
-            "run_id": self.current_run_id,
             "session_id": self.current_session_id,
             "operation": operation,
             "thread_id": thread_id,
@@ -264,7 +254,6 @@ class UnifiedLogger:
                 "errors": 0,
                 "queries_processed": 0,
                 "agent_calls": {},
-                "subagent_calls": {},
                 "runs": 0
             }
             
@@ -285,10 +274,6 @@ class UnifiedLogger:
                             agent_context = data.get("agent_context", {})
                             agent_type = agent_context.get("agent_type", "unknown")
                             stats["agent_calls"][agent_type] = stats["agent_calls"].get(agent_type, 0) + 1
-                            
-                            subagent_type = agent_context.get("subagent_type")
-                            if subagent_type:
-                                stats["subagent_calls"][subagent_type] = stats["subagent_calls"].get(subagent_type, 0) + 1
                         except (json.JSONDecodeError, KeyError, IndexError):
                             pass
                     elif "TOOL_CALL_END:" in line:

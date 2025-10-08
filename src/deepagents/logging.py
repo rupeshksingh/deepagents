@@ -7,7 +7,7 @@ by redirecting all calls to the new unified logging system.
 
 from typing import Any
 
-from src.deepagents.unified_logging import (
+from src.deepagents.logging_utils import (
     get_unified_logger,
 )
 

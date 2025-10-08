@@ -13,7 +13,7 @@ from typing import Dict, Any
 from test_chat import run_comprehensive_tests
 from test_memory import run_memory_tests
 from test_streaming import run_streaming_tests
-from src.deepagents.unified_logging import get_tool_call_stats
+from src.deepagents.logging_utils import get_tool_call_stats
 from pymongo import MongoClient
 
 

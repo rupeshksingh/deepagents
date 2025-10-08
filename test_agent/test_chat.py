@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Dict, Any, List
 
 from react_agent import ReactAgent
-from src.deepagents.unified_logging import get_unified_logger, get_tool_call_stats, get_session_stats
+from src.deepagents.logging_utils import get_unified_logger, get_tool_call_stats, get_session_stats
 from pymongo import MongoClient
 
 
