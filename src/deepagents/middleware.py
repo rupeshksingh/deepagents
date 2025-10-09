@@ -1,8 +1,14 @@
 """DeepAgents implemented as Middleware"""
+
 import json
 from datetime import datetime
 from langchain.agents import create_agent
-from langchain.agents.middleware import AgentMiddleware, AgentState, ModelRequest, SummarizationMiddleware
+from langchain.agents.middleware import (
+    AgentMiddleware,
+    AgentState,
+    ModelRequest,
+    SummarizationMiddleware,
+)
 from langchain.agents.middleware.prompt_caching import AnthropicPromptCachingMiddleware
 from langchain_core.tools import BaseTool, tool, InjectedToolCallId
 from langchain_core.messages import ToolMessage
@@ -11,24 +17,36 @@ from langgraph.types import Command
 from typing import Annotated
 from src.deepagents.state import PlanningState, FilesystemState
 from src.deepagents.tools import write_todos, ls, read_file, write_file, edit_file
-from src.deepagents.prompts import WRITE_TODOS_SYSTEM_PROMPT, TASK_SYSTEM_PROMPT, FILESYSTEM_SYSTEM_PROMPT, TASK_TOOL_DESCRIPTION, BASE_AGENT_PROMPT
+from src.deepagents.prompts import (
+    WRITE_TODOS_SYSTEM_PROMPT,
+    TASK_SYSTEM_PROMPT,
+    FILESYSTEM_SYSTEM_PROMPT,
+    TASK_TOOL_DESCRIPTION,
+    BASE_AGENT_PROMPT,
+)
 from src.deepagents.types import SubAgent, CustomSubAgent
-from src.deepagents.logging_utils import log_tool_call, log_subagent_call, set_agent_context, get_unified_logger
+from src.deepagents.logging_utils import (
+    log_tool_call,
+    log_subagent_call,
+    set_agent_context,
+    get_unified_logger,
+)
 
 ###########################
 # Tool Call Logging Middleware
 ###########################
 
+
 class ToolCallLoggingMiddleware(AgentMiddleware):
     """Simplified middleware to log all tool calls at the agent level with context."""
-    
+
     def __init__(self, agent_type: str = "main_agent", agent_id: str = None):
         """Initialize with agent context."""
         self.agent_type = agent_type
         self.agent_id = agent_id or f"agent_{id(self)}"
         self.logger = get_unified_logger()
         set_agent_context(self.agent_type, self.agent_id)
-    
+
     def modify_tool_call(self, tool_call, agent_state):
         """Log tool calls before they are executed with unified context."""
         tool_name = tool_call.get("name", "unknown")
@@ -43,40 +61,54 @@ class ToolCallLoggingMiddleware(AgentMiddleware):
             "agent_context": {
                 "agent_type": self.agent_type,
                 "agent_id": self.agent_id,
-                "middleware": "ToolCallLoggingMiddleware"
-            }
+                "middleware": "ToolCallLoggingMiddleware",
+            },
         }
         self.logger.logger.info(f"AGENT_TOOL_CALL: {json.dumps(log_data, default=str)}")
-        
+
         return tool_call
+
 
 ###########################
 # Planning Middleware
 ###########################
 
+
 class PlanningMiddleware(AgentMiddleware):
     state_schema = PlanningState
     tools = [write_todos]
 
-    def modify_model_request(self, request: ModelRequest, agent_state: PlanningState) -> ModelRequest:
-        request.system_prompt = request.system_prompt + "\n\n" + WRITE_TODOS_SYSTEM_PROMPT
+    def modify_model_request(
+        self, request: ModelRequest, agent_state: PlanningState
+    ) -> ModelRequest:
+        request.system_prompt = (
+            request.system_prompt + "\n\n" + WRITE_TODOS_SYSTEM_PROMPT
+        )
         return request
+
 
 ###########################
 # Filesystem Middleware
 ###########################
 
+
 class FilesystemMiddleware(AgentMiddleware):
     state_schema = FilesystemState
     tools = [ls, read_file, write_file, edit_file]
 
-    def modify_model_request(self, request: ModelRequest, agent_state: FilesystemState) -> ModelRequest:
-        request.system_prompt = request.system_prompt + "\n\n" + FILESYSTEM_SYSTEM_PROMPT
+    def modify_model_request(
+        self, request: ModelRequest, agent_state: FilesystemState
+    ) -> ModelRequest:
+        request.system_prompt = (
+            request.system_prompt + "\n\n" + FILESYSTEM_SYSTEM_PROMPT
+        )
         return request
+
 
 ###########################
 # SubAgent Middleware
 ###########################
+
 
 class SubAgentMiddleware(AgentMiddleware):
     def __init__(
@@ -95,14 +127,17 @@ class SubAgentMiddleware(AgentMiddleware):
         )
         self.tools = [task_tool]
 
-    def modify_model_request(self, request: ModelRequest, agent_state: AgentState) -> ModelRequest:
+    def modify_model_request(
+        self, request: ModelRequest, agent_state: AgentState
+    ) -> ModelRequest:
         request.system_prompt = request.system_prompt + "\n\n" + TASK_SYSTEM_PROMPT
         return request
+
 
 def _get_agents(
     default_subagent_tools: list[BaseTool],
     subagents: list[SubAgent | CustomSubAgent],
-    model
+    model,
 ):
     default_subagent_middleware = [
         PlanningMiddleware(),
@@ -110,8 +145,8 @@ def _get_agents(
         # TODO: Add this back when fixed
         SummarizationMiddleware(
             model=model,
-            max_tokens_before_summary=120000,
-            messages_to_keep=20,
+            max_tokens_before_summary=60000,
+            messages_to_keep=12,
         ),
         AnthropicPromptCachingMiddleware(ttl="5m", unsupported_model_behavior="ignore"),
     ]
@@ -121,7 +156,7 @@ def _get_agents(
             prompt=BASE_AGENT_PROMPT,
             tools=default_subagent_tools,
             checkpointer=False,
-            middleware=default_subagent_middleware
+            middleware=default_subagent_middleware,
         )
     }
     for _agent in subagents:
@@ -164,12 +199,11 @@ def create_task_tool(
     model,
     is_async: bool = False,
 ):
-    agents = _get_agents(
-        default_subagent_tools, subagents, model
-    )
+    agents = _get_agents(default_subagent_tools, subagents, model)
     other_agents_string = _get_subagent_description(subagents)
 
     if is_async:
+
         @tool(
             description=TASK_TOOL_DESCRIPTION.format(other_agents=other_agents_string)
         )
@@ -186,7 +220,7 @@ def create_task_tool(
             set_agent_context("subagent", f"subagent_{subagent_type}", subagent_type)
 
             log_subagent_call(subagent_type, description)
-            
+
             sub_agent = agents[subagent_type]
             state["messages"] = [{"role": "user", "content": description}]
             result = await sub_agent.ainvoke(state)
@@ -204,7 +238,9 @@ def create_task_tool(
                     ],
                 }
             )
-    else: 
+
+    else:
+
         @tool(
             description=TASK_TOOL_DESCRIPTION.format(other_agents=other_agents_string)
         )
@@ -221,7 +257,7 @@ def create_task_tool(
             set_agent_context("subagent", f"subagent_{subagent_type}", subagent_type)
 
             log_subagent_call(subagent_type, description)
-            
+
             sub_agent = agents[subagent_type]
             state["messages"] = [{"role": "user", "content": description}]
             result = sub_agent.invoke(state)
@@ -239,4 +275,5 @@ def create_task_tool(
                     ],
                 }
             )
+
     return task

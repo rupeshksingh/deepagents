@@ -10,6 +10,8 @@ dependencies = [
     "langchain-anthropic>=0.1.23",
     "langchain>=1.0.0a9",
     "langgraph-prebuilt>=0.7.0a2",
+    "google-genai~=1.29.0",
+    "langchain-google-genai>=2.0.9",
 ]
 
 [project.optional-dependencies]
@@ -32,3 +34,13 @@ packages = ["deepagents", "tests"]
 
 [tool.setuptools.package-data]
 "*" = ["py.typed"]
+
+[tool.pylint.messages_control]
+disable = [
+    "logging-fstring-interpolation",
+    "W1203",
+    "W1309",
+    "W1514",
+    "C0301",
+    "C0303"
+]

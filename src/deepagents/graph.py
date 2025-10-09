@@ -3,13 +3,23 @@ from langchain_core.tools import BaseTool
 from langchain_core.language_models import LanguageModelLike
 from langgraph.types import Checkpointer
 from langchain.agents import create_agent
-from langchain.agents.middleware import AgentMiddleware, SummarizationMiddleware, HumanInTheLoopMiddleware
+from langchain.agents.middleware import (
+    AgentMiddleware,
+    SummarizationMiddleware,
+    HumanInTheLoopMiddleware,
+)
 from langchain.agents.middleware.human_in_the_loop import ToolConfig
 from langchain.agents.middleware.prompt_caching import AnthropicPromptCachingMiddleware
-from src.deepagents.middleware import PlanningMiddleware, FilesystemMiddleware, SubAgentMiddleware, ToolCallLoggingMiddleware
+from src.deepagents.middleware import (
+    PlanningMiddleware,
+    FilesystemMiddleware,
+    SubAgentMiddleware,
+    ToolCallLoggingMiddleware,
+)
 from src.deepagents.prompts import BASE_AGENT_PROMPT
 from src.deepagents.model import get_default_model
 from src.deepagents.types import SubAgent, CustomSubAgent
+
 
 def agent_builder(
     tools: Sequence[Union[BaseTool, Callable, dict[str, Any]]],
@@ -26,21 +36,23 @@ def agent_builder(
         model = get_default_model()
 
     deepagent_middleware = [
-        ToolCallLoggingMiddleware(agent_type="main_agent", agent_id=f"main_{id(model)}"),  # Enhanced logging middleware
+        ToolCallLoggingMiddleware(
+            agent_type="main_agent", agent_id=f"main_{id(model)}"
+        ),  # Enhanced logging middleware
         PlanningMiddleware(),
         FilesystemMiddleware(),
         SubAgentMiddleware(
-            default_subagent_tools=tools,   # NOTE: These tools are piped to the general-purpose subagent.
+            default_subagent_tools=tools,  # NOTE: These tools are piped to the general-purpose subagent.
             subagents=subagents if subagents is not None else [],
             model=model,
             is_async=is_async,
         ),
         SummarizationMiddleware(
             model=model,
-            max_tokens_before_summary=120000,
-            messages_to_keep=20,
+            max_tokens_before_summary=60000,
+            messages_to_keep=12,
         ),
-        AnthropicPromptCachingMiddleware(ttl="5m", unsupported_model_behavior="ignore")
+        AnthropicPromptCachingMiddleware(ttl="5m", unsupported_model_behavior="ignore"),
     ]
     # Add tool interrupt config if provided
     if tool_configs is not None:
@@ -57,6 +69,7 @@ def agent_builder(
         context_schema=context_schema,
         checkpointer=checkpointer,
     )
+
 
 def create_deep_agent(
     tools: Sequence[Union[BaseTool, Callable, dict[str, Any]]] = [],
@@ -99,6 +112,7 @@ def create_deep_agent(
         tool_configs=tool_configs,
         is_async=False,
     )
+
 
 def async_create_deep_agent(
     tools: Sequence[Union[BaseTool, Callable, dict[str, Any]]] = [],
