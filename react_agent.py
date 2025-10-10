@@ -148,22 +148,14 @@ class ReactAgent:
         """Build /context files for the virtual filesystem from MongoDB metadata."""
         summary = get_proposal_summary(self.mongo_client, tender_id, self.org_id)
         if summary is None:
-            summary = "Summary not found"
-        else:
-            # Cap tender_summary to avoid oversized prompts
-            MAX_SUMMARY_CHARS = 8000
-            if len(summary) > MAX_SUMMARY_CHARS:
-                summary = summary[:MAX_SUMMARY_CHARS] + "\n\n[... truncated ...]"
+            summary = "Summary not found"     
 
         docs = (
             get_proposal_files_summary(self.mongo_client, tender_id, self.org_id) or []
         )
         file_index = []
-        MAX_FILE_SUMMARY_CHARS = 500
         for d in docs:
             s = d.get("summary")
-            if isinstance(s, str) and len(s) > MAX_FILE_SUMMARY_CHARS:
-                s = s[:MAX_FILE_SUMMARY_CHARS] + "..."
             file_index.append(
                 {
                     "file_id": str(d.get("file_id")),
@@ -174,7 +166,7 @@ class ReactAgent:
 
         files: Dict[str, str] = {
             self.CONTEXT_SUMMARY_PATH: summary,
-            self.CONTEXT_SUPPLIER_PROFILE_PATH: "Supplier profile not provided.",
+            self.CONTEXT_SUPPLIER_PROFILE_PATH: "Accenture A/S",
             self.CONTEXT_FILE_INDEX_PATH: json.dumps(
                 file_index, ensure_ascii=False, indent=2
             ),

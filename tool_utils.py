@@ -369,7 +369,7 @@ def get_proposal_files_summary(client: MongoClient, tender_id: str, org_id: int 
                 "file_id": doc.get("_id"),
                 "file_name": doc.get("file_name"),
                 "document_type": doc.get("file_extension"),
-                "summary": doc.get("requirements_summary", {}).get("en") if doc.get("requirements_summary", {}).get("en") else list(doc.get("requirements_summary", {}).values())[0]
+                "summary": doc.get("requirements_summary", {}).get("da") if doc.get("requirements_summary", {}).get("da") else list(doc.get("requirements_summary", {}).values())[0]
             }
             for doc in files
         ]

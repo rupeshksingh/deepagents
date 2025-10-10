@@ -49,8 +49,8 @@ def agent_builder(
         ),
         SummarizationMiddleware(
             model=model,
-            max_tokens_before_summary=60000,
-            messages_to_keep=12,
+            max_tokens_before_summary=40000,  # More aggressive for main agent
+            messages_to_keep=8,                # Keep fewer messages
         ),
         AnthropicPromptCachingMiddleware(ttl="5m", unsupported_model_behavior="ignore"),
     ]

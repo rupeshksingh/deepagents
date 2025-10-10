@@ -142,11 +142,11 @@ def _get_agents(
     default_subagent_middleware = [
         PlanningMiddleware(),
         FilesystemMiddleware(),
-        # TODO: Add this back when fixed
+        # Much more aggressive for subagents (must return concise answers to main agent)
         SummarizationMiddleware(
             model=model,
-            max_tokens_before_summary=60000,
-            messages_to_keep=12,
+            max_tokens_before_summary=30000,  # Trigger earlier
+            messages_to_keep=4,                # Keep fewer messages
         ),
         AnthropicPromptCachingMiddleware(ttl="5m", unsupported_model_behavior="ignore"),
     ]
