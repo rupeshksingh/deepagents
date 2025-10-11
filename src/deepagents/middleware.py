@@ -12,6 +12,7 @@ from langchain.agents.middleware import (
 from langchain.agents.middleware.prompt_caching import AnthropicPromptCachingMiddleware
 from langchain_core.tools import BaseTool, tool, InjectedToolCallId
 from langchain_core.messages import ToolMessage
+from langchain.agents.tool_node import InjectedState
 from langchain.chat_models import init_chat_model
 from langgraph.types import Command
 from typing import Annotated
@@ -139,6 +140,8 @@ def _get_agents(
     subagents: list[SubAgent | CustomSubAgent],
     model,
 ):
+    from src.deepagents.state import DeepAgentState
+    
     default_subagent_middleware = [
         PlanningMiddleware(),
         FilesystemMiddleware(),
@@ -185,6 +188,7 @@ def _get_agents(
             tools=_tools,
             middleware=_middleware,
             checkpointer=False,
+            # Note: State schema inherited via FilesystemMiddleware.state_schema
         )
     return agents
 
@@ -211,7 +215,7 @@ def create_task_tool(
         async def task(
             description: str,
             subagent_type: str,
-            state: dict,
+            state: Annotated[FilesystemState, InjectedState],
             tool_call_id: Annotated[str, InjectedToolCallId],
         ):
             if subagent_type not in agents:
@@ -222,8 +226,15 @@ def create_task_tool(
             log_subagent_call(subagent_type, description)
 
             sub_agent = agents[subagent_type]
-            state["messages"] = [{"role": "user", "content": description}]
-            result = await sub_agent.ainvoke(state)
+            # Create clean state for subagent with ONLY the task description
+            # Subagents should use read_file to access context, not inherit pre-loaded content
+            # This prevents context explosion (main agent's pre-loaded context + subagent's file reads)
+            subagent_state = {
+                "messages": [{"role": "user", "content": description}],
+                "files": state.get("files", {}),  # Pass files dict for read_file access
+                # Don't pass todos or other accumulated context
+            }
+            result = await sub_agent.ainvoke(subagent_state)
             state_update = {}
             for k, v in result.items():
                 if k not in ["todos", "messages"]:
@@ -248,7 +259,7 @@ def create_task_tool(
         def task(
             description: str,
             subagent_type: str,
-            state: dict,
+            state: Annotated[FilesystemState, InjectedState],
             tool_call_id: Annotated[str, InjectedToolCallId],
         ):
             if subagent_type not in agents:
@@ -259,8 +270,15 @@ def create_task_tool(
             log_subagent_call(subagent_type, description)
 
             sub_agent = agents[subagent_type]
-            state["messages"] = [{"role": "user", "content": description}]
-            result = sub_agent.invoke(state)
+            # Create clean state for subagent with ONLY the task description
+            # Subagents should use read_file to access context, not inherit pre-loaded content
+            # This prevents context explosion (main agent's pre-loaded content + subagent's file reads)
+            subagent_state = {
+                "messages": [{"role": "user", "content": description}],
+                "files": state.get("files", {}),  # Pass files dict for read_file access
+                # Don't pass todos or other accumulated context
+            }
+            result = sub_agent.invoke(subagent_state)
             state_update = {}
             for k, v in result.items():
                 if k not in ["todos", "messages"]:

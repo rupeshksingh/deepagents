@@ -1,5 +1,6 @@
 from langchain_core.tools import tool, InjectedToolCallId
 from langchain_core.messages import ToolMessage
+from langchain.agents.tool_node import InjectedState
 from langgraph.types import Command
 from typing import Annotated, Union
 from src.deepagents.state import Todo, FilesystemState
@@ -28,7 +29,7 @@ def write_todos(
 
 @tool(description=LIST_FILES_TOOL_DESCRIPTION)
 @log_tool_call
-def ls(state: FilesystemState) -> list[str]:
+def ls(state: Annotated[FilesystemState, InjectedState]) -> list[str]:
     """List all files"""
     return list(state.get("files", {}).keys())
 
@@ -36,7 +37,7 @@ def ls(state: FilesystemState) -> list[str]:
 @log_tool_call
 def read_file(
     file_path: str,
-    state: FilesystemState,
+    state: Annotated[FilesystemState, InjectedState],
     offset: int = 0,
     limit: int = 2000,
 ) -> str:
@@ -74,7 +75,7 @@ def read_file(
 def write_file(
     file_path: str,
     content: str,
-    state: FilesystemState,
+    state: Annotated[FilesystemState, InjectedState],
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
     files = state.get("files", {})
@@ -94,7 +95,7 @@ def edit_file(
     file_path: str,
     old_string: str,
     new_string: str,
-    state: FilesystemState,
+    state: Annotated[FilesystemState, InjectedState],
     tool_call_id: Annotated[str, InjectedToolCallId],
     replace_all: bool = False,
 ) -> Union[Command, str]:

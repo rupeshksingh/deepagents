@@ -72,6 +72,7 @@ class ReactAgent:
     CONTEXT_SUMMARY_PATH = f"{CONTEXT_DIR}/tender_summary.md"
     CONTEXT_SUPPLIER_PROFILE_PATH = f"{CONTEXT_DIR}/supplier_profile.md"
     CONTEXT_FILE_INDEX_PATH = f"{CONTEXT_DIR}/file_index.json"
+    CONTEXT_CLUSTER_ID_PATH = f"{CONTEXT_DIR}/cluster_id.txt"
 
     def _create_agent(self):
         """Create the deep agent graph with custom tools and subagents."""
@@ -81,13 +82,19 @@ class ReactAgent:
             subagents = [
                 {
                     "name": "document-analyzer",
-                    "description": "Analyze tender documents (single or multiple), compare and synthesize findings with citations.",
+                    "description": (
+                        "Advanced tender analyst for iterative, deep analysis across one or more files. "
+                        "Use when a single RAG lookup is insufficient; expects synthesized findings with citations."
+                    ),
                     "prompt": DOCUMENT_ANALYZER_PROMPT,
                     "tools": REACT_TOOLS_DOC,
                 },
                 {
                     "name": "web-researcher",
-                    "description": "Perform external research with web search; compile findings with links under External Sources.",
+                    "description": (
+                        "EU/Danish-focused web researcher for iterative external research and validation. "
+                        "Keeps findings separate from tender-derived claims and returns links."
+                    ),
                     "prompt": RESEARCH_AGENT_PROMPT,
                     "tools": REACT_TOOLS_WEB,
                 },
@@ -146,24 +153,23 @@ class ReactAgent:
 
     def _build_context_files(self, tender_id: str) -> Dict[str, str]:
         """Build /context files for the virtual filesystem from MongoDB metadata."""
+        # Get requirement cluster ID - this is critical for RAG search filtering
+        from tool_utils import get_requirement_cluster_id
+        cluster_id = get_requirement_cluster_id(self.mongo_client, tender_id, self.org_id)
+        if cluster_id is None:
+            cluster_id = "UNKNOWN"
+            logger.warning(f"Could not find requirement_cluster_id for tender {tender_id}")
+        
         summary = get_proposal_summary(self.mongo_client, tender_id, self.org_id)
         if summary is None:
             summary = "Summary not found"
-        else:
-            # Cap tender_summary to avoid oversized prompts
-            MAX_SUMMARY_CHARS = 8000
-            if len(summary) > MAX_SUMMARY_CHARS:
-                summary = summary[:MAX_SUMMARY_CHARS] + "\n\n[... truncated ...]"
 
         docs = (
             get_proposal_files_summary(self.mongo_client, tender_id, self.org_id) or []
         )
         file_index = []
-        MAX_FILE_SUMMARY_CHARS = 500
         for d in docs:
             s = d.get("summary")
-            if isinstance(s, str) and len(s) > MAX_FILE_SUMMARY_CHARS:
-                s = s[:MAX_FILE_SUMMARY_CHARS] + "..."
             file_index.append(
                 {
                     "file_id": str(d.get("file_id")),
@@ -178,6 +184,7 @@ class ReactAgent:
             self.CONTEXT_FILE_INDEX_PATH: json.dumps(
                 file_index, ensure_ascii=False, indent=2
             ),
+            self.CONTEXT_CLUSTER_ID_PATH: cluster_id,  # Add cluster_id for RAG search
         }
         return files
 
@@ -212,11 +219,30 @@ class ReactAgent:
                 }
                 return
 
-            messages = [{"role": "user", "content": user_query}]
+            # Build context files first
+            context_files = self._build_context_files(tender_id) if tender_id else {}
+            
+            # Pre-load critical context into the initial message to avoid LLM tool calls
+            if tender_id and context_files:
+                tender_summary = context_files.get(self.CONTEXT_SUMMARY_PATH, "")
+                file_index = context_files.get(self.CONTEXT_FILE_INDEX_PATH, "")
+                
+                enhanced_query = f"""Tender ID: {tender_id}
 
-            if tender_id:
-                enhanced_query = f"Tender ID: {tender_id}\n\nUser Query: {user_query}"
+<tender_context>
+<tender_summary>
+{tender_summary}
+</tender_summary>
+
+<file_index>
+{file_index}
+</file_index>
+</tender_context>
+
+User Query: {user_query}"""
                 messages = [{"role": "user", "content": enhanced_query}]
+            else:
+                messages = [{"role": "user", "content": user_query}]
 
             config = {"configurable": {"thread_id": thread_id}}
 
@@ -232,10 +258,11 @@ class ReactAgent:
                 }
                 return
 
-            # Bootstrap /context files into virtual filesystem state (L1)
+            # Bootstrap /context files into virtual filesystem state
+            # (Files still available via read_file for reference, but context is pre-loaded)
             state_input: Dict[str, Any] = {"messages": messages}
             if tender_id:
-                state_input["files"] = self._build_context_files(tender_id)
+                state_input["files"] = context_files
 
             yield {
                 "chunk_type": "start",
@@ -330,21 +357,41 @@ class ReactAgent:
                     "success": False,
                 }
 
-            messages = [{"role": "user", "content": user_query}]
+            # Build context files first
+            context_files = self._build_context_files(tender_id) if tender_id else {}
+            
+            # Pre-load critical context into the initial message to avoid LLM tool calls
+            if tender_id and context_files:
+                tender_summary = context_files.get(self.CONTEXT_SUMMARY_PATH, "")
+                file_index = context_files.get(self.CONTEXT_FILE_INDEX_PATH, "")
+                
+                enhanced_query = f"""Tender ID: {tender_id}
 
-            if tender_id:
-                enhanced_query = f"Tender ID: {tender_id}\n\nUser Query: {user_query}"
+<tender_context>
+<tender_summary>
+{tender_summary}
+</tender_summary>
+
+<file_index>
+{file_index}
+</file_index>
+</tender_context>
+
+User Query: {user_query}"""
                 messages = [{"role": "user", "content": enhanced_query}]
+            else:
+                messages = [{"role": "user", "content": user_query}]
 
             config = {"configurable": {"thread_id": thread_id}}
 
             # Enforce single-tender-per-thread guard
             self._ensure_single_tender_scope(thread_id, tender_id)
 
-            # Bootstrap /context files into virtual filesystem state (L1)
+            # Bootstrap /context files into virtual filesystem state
+            # (Files still available via read_file for reference, but context is pre-loaded)
             state_input: Dict[str, Any] = {"messages": messages}
             if tender_id:
-                state_input["files"] = self._build_context_files(tender_id)
+                state_input["files"] = context_files
 
             response = await self.agent.ainvoke(state_input, config=config)
 
