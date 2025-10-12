@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from pymongo import MongoClient
 import uvicorn
 
-from api.router import create_api_router
+from api.streaming_router import create_streaming_router
 from api.models import ApiInfoResponse, HealthResponse
 from api.store import ApiStore
 
@@ -90,11 +90,12 @@ except Exception as e:
 
 if mongo_client:
     try:
-        api_router = create_api_router(mongo_client, db_name="proposal_assistant")
-        app.include_router(api_router)
-        logger.info("API router registered successfully")
+        # Register streaming API router (MVP)
+        streaming_router = create_streaming_router(mongo_client, db_name="proposal_assistant")
+        app.include_router(streaming_router)
+        logger.info("Streaming API router registered successfully")
     except Exception as e:
-        logger.error(f"Failed to register API router: {e}")
+        logger.error(f"Failed to register streaming router: {e}")
         mongodb_status = "error"
 else:
     logger.warning("API endpoints not available due to MongoDB connection failure")

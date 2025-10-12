@@ -18,6 +18,7 @@ from pymongo import MongoClient
 
 from src.deepagents.graph import async_create_deep_agent
 from src.deepagents.state import DeepAgentState
+from src.deepagents.streaming_middleware import StreamingMiddleware, PlanningStreamingMiddleware
 from src.deepagents.logging_utils import (
     log_query_start,
     log_query_end,
@@ -112,6 +113,12 @@ class ReactAgent:
                 },
             ]
 
+            # Create streaming middleware for MVP transparency
+            custom_middleware = [
+                StreamingMiddleware(),
+                PlanningStreamingMiddleware()
+            ]
+            
             agent_graph = async_create_deep_agent(
                 tools=tools,
                 subagents=subagents,
@@ -119,6 +126,7 @@ class ReactAgent:
                 model=self.model,
                 checkpointer=self.checkpointer,
                 context_schema=DeepAgentState,
+                middleware=custom_middleware,
                 tool_configs={
                     # Interrupt when the agent calls HITL tool
                     "request_human_input": True,
