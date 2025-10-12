@@ -128,7 +128,7 @@ Synthesize the above chunks into a clear, actionable answer that the agent can d
 
 **Agent-Optimized Answer**:"""
 
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.1)
+        llm = ChatOpenAI(model="gpt-4o", temperature=0.1)
         response = await llm.ainvoke(synthesis_prompt)
         return response.content if hasattr(response, 'content') else str(response)
         
@@ -180,7 +180,14 @@ async def get_file_content(
     max_pages: int = 40,
     chars_per_page: int = 2000,
 ) -> str:
-    """Return the raw markdown content of a tender file by file_id (no analysis)."""
+    """Return the raw markdown content of a tender file by file_id (no analysis).
+    
+    ⚠️ WARNING: Returns large amounts of text (~40 pages). Only use when:
+    - You need verbatim quotes from a specific known file
+    - search_tender_corpus results reference a file repeatedly
+    - You need to see complete document structure
+    
+    ALWAYS try search_tender_corpus first before using this tool."""
     try:
         content = get_file_content_from_id(
             mongo_client, file_id, tender_id or "", org_id

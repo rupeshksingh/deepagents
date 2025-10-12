@@ -212,22 +212,109 @@ Being proactive with task management demonstrates attentiveness and ensures you 
 Remember: If you only need to make a few tool calls to complete a task, and it is clear what you need to do, it is better to just do the task directly and NOT call this tool at all.
 """
 
-TASK_TOOL_DESCRIPTION = """Launch an ephemeral subagent to handle complex, multi-step independent tasks with isolated context windows. 
+TASK_TOOL_DESCRIPTION = """Launch an ephemeral subagent to handle complex, multi-step independent tasks with isolated context windows.
 
-Available agent types and the tools they have access to:
-- general-purpose: General-purpose agent for researching complex questions, searching for files and content, and executing multi-step tasks. When you are searching for a keyword or file and are not confident that you will find the right match in the first few tries use this agent to perform the search for you. This agent has access to all tools as the main agent.
+## When to Use Subagents
+
+Use subagents when a task is:
+- **Complex and iterative**: Requires multiple searches/tool calls that build on each other
+- **Multi-document**: Needs reading/analyzing 2+ files with cross-referencing
+- **Context-heavy**: Would bloat your context if done directly (e.g., reading multiple full files)
+- **Independent**: Can run in parallel with other tasks without dependencies
+- **Synthesizable**: Final output should be a concise report, not intermediate tool outputs
+
+DO NOT use subagents when:
+- Task is simple (1-3 direct tool calls)
+- You're just being lazy (delegation adds overhead)
+- User explicitly asks for a quick answer
+- You haven't checked context files or done basic searches yet
+
+## Available Agent Types
+
+- **general-purpose**: General-purpose agent with all tools. Use for complex tasks requiring mixed tool usage (searches + file reads + analysis). Good for isolating context-heavy work.
 {other_agents}
 
-When using the Task tool, you must specify a subagent_type parameter to select which agent type to use.
+When using the task tool, you MUST specify a `subagent_type` parameter to select which agent to use.
 
-## Usage notes:
-1. Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses
-2. When the agent is done, it will return a single message back to you. The result returned by the agent is not visible to the user. To show the user the result, you should send a text message back to the user with a concise summary of the result.
-3. Each agent invocation is stateless. You will not be able to send additional messages to the agent, nor will the agent be able to communicate with you outside of its final report. Therefore, your prompt should contain a highly detailed task description for the agent to perform autonomously and you should specify exactly what information the agent should return back to you in its final and only message to you.
-4. The agent's outputs should generally be trusted
-5. Clearly tell the agent whether you expect it to create content, perform analysis, or just do research (search, file reads, web fetches, etc.), since it is not aware of the user's intent
-6. If the agent description mentions that it should be used proactively, then you should try your best to use it without the user having to ask for it first. Use your judgement.
-7. When only the general-purpose agent is provided, you should use it for all tasks. It is great for isolating context and token usage, and completing specific, complex tasks, as it has all the same capabilities as the main agent.
+## Critical Usage Rules
+
+### 1. Parallelize Aggressively
+If you have multiple independent sub-tasks, **ALWAYS** spawn subagents in parallel (multiple `task` tool calls in one message). This dramatically reduces latency.
+
+**Example:**
+```
+# GOOD: Parallel execution
+task(subagent_type="advanced_tender_analyst", description="Analyze risks in Breach/Penalties...")
+task(subagent_type="advanced_tender_analyst", description="Analyze risks in CSR...")
+task(subagent_type="advanced_tender_analyst", description="Analyze risks in Auditing...")
+# All three run simultaneously
+
+# BAD: Sequential when they could be parallel
+# (Do task A, wait, then do task B, wait, then do task C)
+```
+
+### 2. Be Specific in Task Descriptions
+Give the subagent **complete, detailed instructions**. The `description` parameter must be a COMPLETE, SELF-CONTAINED task brief.
+
+**Required elements in every task description:**
+1. **What to analyze/research** - Clear objective
+2. **Which documents/sources to focus on** - File names, sections
+3. **What to identify/extract** - Numbered list of specific findings needed
+4. **What format to return** - Structured findings, comparison table, risk analysis, etc.
+5. **Language to respond in** - English or Danish
+
+**❌ Bad delegations (WILL CAUSE ERRORS):**
+```
+# Missing description entirely:
+task(subagent_type="advanced_tender_analyst")  # ERROR: description required
+
+# Description too vague:
+task(
+    subagent_type="advanced_tender_analyst",
+    description="Analyze the tender"  # Too vague - analyze WHAT?
+)
+
+# Missing key details:
+task(
+    subagent_type="advanced_tender_analyst",
+    description="Find penalties"  # Which documents? What kind of penalties?
+)
+```
+
+**✅ Good delegation (COMPLETE FORMAT):**
+```
+task(
+    subagent_type="advanced_tender_analyst",
+    description="Analyze ALL consequences of repeated failure to report turnover to SKI on time.
+
+Cross-reference these documents:
+- Rammeaftale Section 8 (penalties and reporting obligations)
+- Rammeaftale Section 12 (termination grounds)
+- Bilag D (detailed reporting requirements)
+
+Identify and return:
+1. Immediate financial penalties (bod amounts per late report)
+2. Interest charges (calculation method and annual rate)
+3. Termination triggers (specifically the '3 strikes' rule in Section 8.6)
+4. Escalation path (from first offense to contract termination)
+
+Return structured findings with specific section citations for each item. Respond in English."
+)
+```
+
+**Key principle**: Imagine the subagent has NO context about your conversation. Write the description so it's complete and self-contained.
+
+### 3. One Task Per Agent
+Don't overload subagents with multiple unrelated questions. For multi-part questions, spawn multiple agents in parallel (one per sub-question).
+
+### 4. Trust Subagent Outputs
+Subagents return synthesized, complete findings. Don't re-search what they already found. Use their outputs to build your final answer.
+
+### 5. Subagents Are Stateless
+- Each invocation is independent
+- You cannot send follow-up messages to a subagent
+- The subagent's final message is its ONLY output
+- Make your task description complete and self-contained
 
 ### Example usage of the general-purpose agent:
 

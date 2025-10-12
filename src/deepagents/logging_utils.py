@@ -527,11 +527,22 @@ def log_tool_call(func):
             logger.log_tool_call_start(tool_name, tool_call_id, log_args, log_kwargs)
             result = func(*args, **kwargs)
             execution_time = time.time() - start_time
-            logger.log_tool_call_end(tool_name, tool_call_id, result, execution_time)
+            # Avoid serializing giant state updates on errors; only log type/summary
+            safe_result = result
+            try:
+                from langgraph.types import Command
+                if isinstance(result, Command):
+                    safe_result = {
+                        "update_keys": list((result.update or {}).keys()),
+                        "messages_count": len((result.update or {}).get("messages", [])),
+                    }
+            except Exception:
+                pass
+            logger.log_tool_call_end(tool_name, tool_call_id, safe_result, execution_time)
             return result
         except Exception as e:
             execution_time = time.time() - start_time
-            logger.log_tool_call_error(tool_name, tool_call_id, e, execution_time)
+            logger.log_tool_call_error(tool_name, tool_call_id, str(e), execution_time)
             raise
 
     @wraps(func)
@@ -558,11 +569,21 @@ def log_tool_call(func):
             logger.log_tool_call_start(tool_name, tool_call_id, log_args, log_kwargs)
             result = await func(*args, **kwargs)
             execution_time = time.time() - start_time
-            logger.log_tool_call_end(tool_name, tool_call_id, result, execution_time)
+            safe_result = result
+            try:
+                from langgraph.types import Command
+                if isinstance(result, Command):
+                    safe_result = {
+                        "update_keys": list((result.update or {}).keys()),
+                        "messages_count": len((result.update or {}).get("messages", [])),
+                    }
+            except Exception:
+                pass
+            logger.log_tool_call_end(tool_name, tool_call_id, safe_result, execution_time)
             return result
         except Exception as e:
             execution_time = time.time() - start_time
-            logger.log_tool_call_error(tool_name, tool_call_id, e, execution_time)
+            logger.log_tool_call_error(tool_name, tool_call_id, str(e), execution_time)
             raise
 
     import inspect

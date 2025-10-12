@@ -13,6 +13,7 @@ from src.deepagents.logging_utils import (
     start_run,
     end_run,
     get_tool_call_stats,
+    get_session_stats,
     get_unified_logger,
 )
 
@@ -47,9 +48,15 @@ async def run_query(query: str, tender_id: str) -> dict:
 
     response_text = result.get("response", "No response")
     duration_ms = result.get("processing_time_ms", 0)
+    
+    # Get session ID from result metadata if available
+    session_id = result.get("session_id")
 
-    # Get tool call statistics
-    stats = get_tool_call_stats()
+    # Get tool call statistics (session-specific if available)
+    if session_id:
+        stats = get_session_stats(session_id)
+    else:
+        stats = get_tool_call_stats()  # Fallback to cumulative stats
     
     # End run and get summary
     end_run(f"Completed query in {duration_ms/1000:.2f}s")

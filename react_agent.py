@@ -81,19 +81,31 @@ class ReactAgent:
 
             subagents = [
                 {
-                    "name": "document-analyzer",
+                    "name": "advanced_tender_analyst",
                     "description": (
-                        "Advanced tender analyst for iterative, deep analysis across one or more files. "
-                        "Use when a single RAG lookup is insufficient; expects synthesized findings with citations."
+                        "Use this subagent when the user's question requires: "
+                        "(1) Analyzing MULTIPLE documents or sections in depth, "
+                        "(2) Iterative search-and-synthesis (one search reveals need for another), "
+                        "(3) Cross-referencing between contract sections (e.g., Rammeaftale + Bilag C + Bilag D), "
+                        "(4) Extracting conditional logic or procedures (e.g., step-by-step workflows, consequence chains), "
+                        "(5) Identifying patterns, risks, or requirements across scattered sources. "
+                        "DO NOT use for simple lookups (definitions, single values) - use search_tender_corpus directly instead. "
+                        "This agent will autonomously perform multiple searches, read files, and synthesize findings. "
+                        "Delegate ONE focused analysis task per agent. For multi-part questions, spawn multiple agents in parallel."
                     ),
                     "prompt": DOCUMENT_ANALYZER_PROMPT,
                     "tools": REACT_TOOLS_DOC,
                 },
                 {
-                    "name": "web-researcher",
+                    "name": "web_researcher",
                     "description": (
-                        "EU/Danish-focused web researcher for iterative external research and validation. "
-                        "Keeps findings separate from tender-derived claims and returns links."
+                        "Use this subagent for web-based research requiring multiple searches and synthesis: "
+                        "(1) Competitor analysis across multiple companies, "
+                        "(2) Market research on technologies, trends, or industries, "
+                        "(3) Regulatory/legal research requiring multiple sources, "
+                        "(4) Any web research that needs iteration (one search revealing need for more). "
+                        "DO NOT use for single, straightforward web searches - call web_search tool directly instead. "
+                        "For multi-topic research (e.g., 3 competitors), spawn multiple agents in parallel (one per topic)."
                     ),
                     "prompt": RESEARCH_AGENT_PROMPT,
                     "tools": REACT_TOOLS_WEB,
@@ -169,7 +181,8 @@ class ReactAgent:
         )
         file_index = []
         for d in docs:
-            s = d.get("summary")
+            # Summary is already fetched as agent_summary (with fallback) from tool_utils.get_proposal_files_summary
+            s = d.get("summary", "No summary available")
             file_index.append(
                 {
                     "file_id": str(d.get("file_id")),
@@ -417,6 +430,7 @@ User Query: {user_query}"""
                 "processing_time_ms": processing_time_ms,
                 "success": True,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
+                "session_id": session_id,
             }
 
         except Exception as e:
@@ -431,6 +445,7 @@ User Query: {user_query}"""
                 "thread_id": thread_id,
                 "success": False,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
+                "session_id": session_id,
             }
 
     def get_conversation_history(self, _thread_id: str) -> List[Dict[str, Any]]:
@@ -461,7 +476,7 @@ User Query: {user_query}"""
             "mongodb_connected": True,
             "mongodb_database": self.db_name,
             "tools_available": len(REACT_TOOLS) if REACT_TOOLS else 0,
-            "subagents": ["document-analyzer", "web-researcher"],
+            "subagents": ["advanced_tender_analyst", "web_researcher"],
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 

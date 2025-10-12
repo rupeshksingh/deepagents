@@ -21,8 +21,247 @@ from src.deepagents.logging_utils import (
     get_unified_logger,
 )
 
-# Test cases organized by level
+# NEW COMPREHENSIVE TEST CASES (Bilag F focused)
 TEST_CASES = {
+    "A. Sanity & Quick-RAG Tests (No Subagent)": [
+        {
+            "id": "A1",
+            "name": "Obligatoriske ydelsesområder lookup",
+            "query": "Hvilke obligatoriske ydelsesområder indgår i Rammeaftale 02.15?",
+            "english": "Which mandatory service areas are included in Framework Agreement 02.15?",
+            "expected_routing": "Orchestrator direct (search_tender_corpus)",
+            "success_criteria": "Mentions 1-7 (It-strategier, Forretningsbehov, It-udbud, It-sikkerhed, It-arkitektur, It-governance, Projekt-/programledelse). Cite Bilag F page 3."
+        },
+        {
+            "id": "A2",
+            "name": "Ydelsesområde 3 details",
+            "query": "Hvad dækker Ydelsesområde 3: It-udbud (delområder og ydelser)?",
+            "english": "What does Service Area 3: IT Procurement cover (sub-areas and services)?",
+            "expected_routing": "Orchestrator direct (search_tender_corpus)",
+            "success_criteria": "Refers to 2.3.1 and 2.3.2. Cite Bilag F pp. 9-11."
+        },
+        {
+            "id": "A3",
+            "name": "Konsulentkategori 3 requirements",
+            "query": "Angiv kravene for Konsulentkategori 3 (seniorkonsulent/specialist) kort.",
+            "english": "Briefly state the requirements for Consultant Category 3 (senior consultant/specialist).",
+            "expected_routing": "Orchestrator direct (search_tender_corpus)",
+            "success_criteria": "Five headings (A-E: Education/experience, Independence, Influence, Complexity, Business skills). Cite Bilag F.2 pp. 5/6."
+        },
+        {
+            "id": "A4",
+            "name": "WAS-tool reference",
+            "query": "Hvor nævnes WAS-tool (Digitaliseringsstyrelsens Web Accessibility Statement Tool)?",
+            "english": "Where is the WAS-tool (Danish Digitalization Agency's Web Accessibility Statement Tool) mentioned?",
+            "expected_routing": "Orchestrator direct (search_tender_corpus)",
+            "success_criteria": "Identifies mentions under 3.5.1 and 3.5.2 UX services. Cite relevant pages (~pp. 31 & 33 in Bilag F)."
+        },
+        {
+            "id": "A5",
+            "name": "Purpose of system adaptation",
+            "query": "Hvad er formålet med Tilpasning af eksisterende it-systemer?",
+            "english": "What is the purpose of Adaptation of existing IT systems?",
+            "expected_routing": "Orchestrator direct (search_tender_corpus)",
+            "success_criteria": "Protecting prior IT investments via changes/maintenance/error correction. Cite Bilag F 3.6 intro and 3.6.1."
+        }
+    ],
+    
+    "B. Exact Citation / File Retrieval Tests": [
+        {
+            "id": "B1",
+            "name": "Exact citation of BC planning",
+            "query": "Citer præcist delområdet 'Business continuity planlægning og afprøvning'.",
+            "english": "Quote precisely the sub-area 'Business continuity planning and testing'.",
+            "expected_routing": "Orchestrator: search_tender_corpus → get_file_content",
+            "success_criteria": "Quotes 2.4.2 subsection accurately with quote block and page ref."
+        },
+        {
+            "id": "B2",
+            "name": "Full section retrieval",
+            "query": "Vis hele sektionen 2.7.3 Ledelse af agile projekter (ingen sammenfatning).",
+            "english": "Show the entire section 2.7.3 Management of agile projects (no summary).",
+            "expected_routing": "Orchestrator: get_file_content",
+            "success_criteria": "Full 2.7.3 text as excerpt, exact heading visible, page span included."
+        }
+    ],
+    
+    "C. Multi-Snippet Synthesis (No Subagent)": [
+        {
+            "id": "C1",
+            "name": "Compare security and compliance",
+            "query": "Sammenlign It-sikkerhed (2.4.1) og It-compliance (2.4.3): nøgleforskelle og leverancer.",
+            "english": "Compare IT security (2.4.1) and IT compliance (2.4.3): key differences and deliverables.",
+            "expected_routing": "Orchestrator: 2x search_tender_corpus + synthesis",
+            "success_criteria": "Comparison table/list with citations to both sections. Clear contrast between policy/process vs. legal compliance."
+        },
+        {
+            "id": "C2",
+            "name": "IT architecture sub-areas list",
+            "query": "Lav en punktopstilling over delområder og ydelser under 2.5.1 Etablering af en it-arkitektur.",
+            "english": "Create a bullet list of sub-areas and services under 2.5.1 Establishment of an IT architecture.",
+            "expected_routing": "Orchestrator: search_tender_corpus + structuring",
+            "success_criteria": "Captures data models, dataflow, platform selection, security design, environments, cloud/shared components, standard applications. Cite 2.5.1."
+        }
+    ],
+    
+    "D. Internal Deep Analysis (Requires advanced_tender_analyst)": [
+        {
+            "id": "D1",
+            "name": "Find all backup references",
+            "query": "Find alle steder i materialet hvor backup (eller genopretning) omtales, og lav anbefalinger til vores leveranceplan.",
+            "english": "Find all places in the material where backup (or recovery) is mentioned, and make recommendations for our delivery plan.",
+            "expected_routing": "Delegate to advanced_tender_analyst",
+            "success_criteria": "Mentions backup/recovery under 2.4.1 and 3.7.1. Cites Bilag F pages. Returns structured recommendations."
+        },
+        {
+            "id": "D2",
+            "name": "Map procurement activities to business case",
+            "query": "Udtræk alle aktiviteter under 'Gennemførelse af udbud' og map dem til påvirkning af business case.",
+            "english": "Extract all activities under 'Execution of procurement' and map them to business case impact.",
+            "expected_routing": "Delegate to advanced_tender_analyst",
+            "success_criteria": "2-column overview (Activity → BC impact). Includes prequalification, evaluation, award, contract, complaints. Cites 2.3.2 and 2.2.x."
+        },
+        {
+            "id": "D3",
+            "name": "Cross-reference agile vs waterfall",
+            "query": "Lav en krydsreference mellem agil og vandfald for både test og udvikling (sektioner 3.4 & 3.5).",
+            "english": "Create a cross-reference between agile and waterfall for both test and development (sections 3.4 & 3.5).",
+            "expected_routing": "Delegate to advanced_tender_analyst",
+            "success_criteria": "Matrix with phases/roles/artifacts, key differences. Covers test strategy, agile testing, regression, UX/WAS requirements. Cites 3.4 & 3.5."
+        },
+        {
+            "id": "D4",
+            "name": "Extract all personal data compliance requirements",
+            "query": "Udtræk samtlige persondata/compliance-krav og strukturer dem i en tjekliste.",
+            "english": "Extract all personal data/compliance requirements and structure them into a checklist.",
+            "expected_routing": "Delegate to advanced_tender_analyst",
+            "success_criteria": "Checklist with guidelines/monitoring/escalation/anchoring + test data handling from 2.5.1. Citations included."
+        }
+    ],
+    
+    "E. Parallel Internal Analyses (Concurrency)": [
+        {
+            "id": "E1",
+            "name": "Summarize all 7 service areas",
+            "query": "Opsummer for hvert ydelsesområde 1-7: 3 vigtigste leverancer og et konkret eksempel.",
+            "english": "Summarize for each service area 1-7: 3 most important deliverables and a concrete example.",
+            "expected_routing": "Orchestrator: 7 parallel advanced_tender_analyst tasks",
+            "success_criteria": "Seven rows populated with deliverables and examples. All within Bilag F's mandatory areas."
+        },
+        {
+            "id": "E2",
+            "name": "Deliverables checklist for 3 areas",
+            "query": "Lav en 'hvad-skal-leveres' checkliste for: 2.3 It-udbud, 2.4 It-sikkerhed/BC/compliance, 2.7 Programledelse.",
+            "english": "Create a 'what-to-deliver' checklist for: 2.3 IT procurement, 2.4 IT security/BC/compliance, 2.7 Program management.",
+            "expected_routing": "Orchestrator: 3 parallel advanced_tender_analyst tasks",
+            "success_criteria": "Merged checklist with artifacts (point models, policies, contingency plans, program standards) with citations."
+        }
+    ],
+    
+    "F. Writer Workflow (Analysis → Drafting)": [
+        {
+            "id": "F1",
+            "name": "Draft IT procurement approach",
+            "query": "Skriv på dansk et kort afsnit 'Tilgang til It-udbud (Ydelsesområde 3)' baseret på bilagets leverancer.",
+            "english": "Write in Danish a brief section 'Approach to IT Procurement (Service Area 3)' based on the annex deliverables.",
+            "expected_routing": "Sequential: advanced_tender_analyst → bid_writer_assistant",
+            "success_criteria": "Danish, 150-200 words, persuasive, tethered to Bilag F 2.3 with inline citations."
+        },
+        {
+            "id": "F2",
+            "name": "Draft IT security approach",
+            "query": "Skriv en udkaststekst (200-300 ord) om vores It-sikkerhed-tilgang.",
+            "english": "Write a draft text (200-300 words) about our IT security approach.",
+            "expected_routing": "Sequential: advanced_tender_analyst → bid_writer_assistant",
+            "success_criteria": "References IT security policy, monitoring/escalation, encryption, logging, virus protection. Danish. Cites 2.4.1."
+        },
+        {
+            "id": "F3",
+            "name": "Executive summary for municipal client",
+            "query": "Lav en Executive Summary (max 250 ord) for obligatoriske ydelsesområder til en kommunal kunde.",
+            "english": "Create an Executive Summary (max 250 words) for mandatory service areas for a municipal client.",
+            "expected_routing": "Parallel analysis of 2.1-2.7 → bid_writer_assistant",
+            "success_criteria": "Brief, coherent, covers all 7 areas. Cites Bilag F overview table page 3."
+        }
+    ],
+    
+    "G. Web Search by Orchestrator": [
+        {
+            "id": "G1",
+            "name": "GDPR changes affecting compliance",
+            "query": "Er der seneste ændringer i GDPR som påvirker 'It-compliance' for kommuner?",
+            "english": "Are there recent changes in GDPR that affect 'IT compliance' for municipalities?",
+            "expected_routing": "Orchestrator: web_search",
+            "success_criteria": "Clear separation of external info from tender content. No hallucinated tender facts. Optional crosswalk to 2.4.3."
+        }
+    ],
+    
+    "H. Cross-File Tasks": [
+        {
+            "id": "H1",
+            "name": "Show customer list from Bilag A",
+            "query": "Vis kundelisten fra Bilag A.",
+            "english": "Show the customer list from Annex A.",
+            "expected_routing": "Orchestrator: read file_index → get_file_content(Bilag A)",
+            "success_criteria": "Picks correct file. Returns list or explains if redacted."
+        },
+        {
+            "id": "H2",
+            "name": "Direct award rules from Bilag B",
+            "query": "Hvornår og hvordan kan Direkte tildeling anvendes (Bilag B)?",
+            "english": "When and how can Direct Award be used (Annex B)?",
+            "expected_routing": "Orchestrator: get_file_content(Bilag B) + quotes",
+            "success_criteria": "Summarizes rules with exact quotes for critical definitions."
+        },
+        {
+            "id": "H3",
+            "name": "Reporting requirements from Bilag D",
+            "query": "Hvilke rapporteringskrav har leverandøren (Bilag D)?",
+            "english": "What reporting requirements does the supplier have (Annex D)?",
+            "expected_routing": "Orchestrator: get_file_content(Bilag D)",
+            "success_criteria": "Summarizes obligations, deliverables, cadence with short quotes."
+        },
+        {
+            "id": "H4",
+            "name": "CSR obligations from Bilag E",
+            "query": "Hvad er vores CSR-forpligtelser (Bilag E)?",
+            "english": "What are our CSR obligations (Annex E)?",
+            "expected_routing": "Orchestrator: get_file_content(Bilag E)",
+            "success_criteria": "Bullet summary with mandatory clause quotes."
+        }
+    ],
+    
+    "I. Robustness / Edge Cases": [
+        {
+            "id": "I1",
+            "name": "Ambiguous request",
+            "query": "Kan vi levere dette?",
+            "english": "Can we deliver this?",
+            "expected_routing": "Orchestrator: clarifying follow-up question",
+            "success_criteria": "Asks clarification about which service area/requirement. No premature RAG."
+        },
+        {
+            "id": "I2",
+            "name": "Non-existent deadline",
+            "query": "Find deadline for tilbudsafgivelse.",
+            "english": "Find the deadline for bid submission.",
+            "expected_routing": "Orchestrator: search_tender_corpus → check summary → 'not found'",
+            "success_criteria": "Honest 'not found', no hallucination. Suggests where it might be (procurement notice)."
+        },
+        {
+            "id": "I3",
+            "name": "Top 10 passages on program management",
+            "query": "Returnér de 10 mest relevante passager om 'Programledelse' (citeret).",
+            "english": "Return the 10 most relevant passages about 'Program Management' (cited).",
+            "expected_routing": "Orchestrator: search_tender_corpus(top_k=50) → deduplicate → top 10",
+            "success_criteria": "Shows top 10 chunks with inline quotes and references to Bilag F 2.7.4."
+        }
+    ]
+}
+
+# OLD TEST CASES (Commented out - already run)
+OLD_TEST_CASES_COMMENTED = """
+{
     "Level 0: Initialization and Context Awareness": [
         {
             "id": "0.1",
@@ -82,6 +321,7 @@ TEST_CASES = {
         }
     ]
 }
+"""
 
 
 async def run_single_test(agent: ReactAgent, test_case: dict, tender_id: str, output_file) -> dict:
@@ -100,6 +340,10 @@ async def run_single_test(agent: ReactAgent, test_case: dict, tender_id: str, ou
     output_file.write(f"Query (Danish): {query}\n")
     if english:
         output_file.write(f"Query (English): {english}\n")
+    if "expected_routing" in test_case:
+        output_file.write(f"Expected Routing: {test_case['expected_routing']}\n")
+    if "success_criteria" in test_case:
+        output_file.write(f"Success Criteria: {test_case['success_criteria']}\n")
     output_file.write(f"\nThread ID: {thread_id}\n")
     output_file.write(f"Tender ID: {tender_id}\n")
     output_file.write(f"Timestamp: {datetime.now().isoformat()}\n")
@@ -254,7 +498,9 @@ async def run_all_tests():
         output_file.write(f"Tender ID: {tender_id}\n")
         output_file.write(f"Timestamp: {datetime.now().isoformat()}\n")
         output_file.write(f"Test Framework: LangChain Deep Agents\n")
-        output_file.write(f"Agent Architecture: Main Agent + Subagents (document-analyzer, web-researcher)\n")
+        output_file.write(f"Agent Architecture: Main Agent + Subagents (advanced_tender_analyst, bid_writer_assistant)\n")
+        output_file.write(f"Test Focus: Bilag F (Service Areas 1-7) + Cross-file operations (Bilag A-E)\n")
+        output_file.write(f"Total Test Categories: 9 (A-I)\n")
         output_file.write("\n")
         
         # Run all test cases

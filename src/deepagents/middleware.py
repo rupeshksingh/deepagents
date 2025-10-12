@@ -205,6 +205,20 @@ def create_task_tool(
 ):
     agents = _get_agents(default_subagent_tools, subagents, model)
     other_agents_string = _get_subagent_description(subagents)
+    
+    def _fix_task_tool_schema(tool_obj):
+        """Remove injected params from tool schema to prevent validation errors."""
+        if hasattr(tool_obj, 'args_schema') and tool_obj.args_schema is not None:
+            schema = tool_obj.args_schema
+            if hasattr(schema, 'model_fields'):
+                # Remove 'state' and 'tool_call_id' from required fields
+                if 'state' in schema.model_fields:
+                    schema.model_fields['state'].default = None
+                    schema.model_fields['state'].is_required = lambda: False
+                if 'tool_call_id' in schema.model_fields:
+                    schema.model_fields['tool_call_id'].default = None
+                    schema.model_fields['tool_call_id'].is_required = lambda: False
+        return tool_obj
 
     if is_async:
 
@@ -229,9 +243,13 @@ def create_task_tool(
             # Create clean state for subagent with ONLY the task description
             # Subagents should use read_file to access context, not inherit pre-loaded content
             # This prevents context explosion (main agent's pre-loaded context + subagent's file reads)
+            files_dict = state.get("files", {})
+            get_unified_logger().logger.info(
+                f"TASK_PASS_FILES: subagent={subagent_type} files_count={len(files_dict)} keys_sample={list(files_dict.keys())[:3]}"
+            )
             subagent_state = {
                 "messages": [{"role": "user", "content": description}],
-                "files": state.get("files", {}),  # Pass files dict for read_file access
+                "files": files_dict,  # Pass files dict for read_file access
                 # Don't pass todos or other accumulated context
             }
             result = await sub_agent.ainvoke(subagent_state)
