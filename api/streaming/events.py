@@ -114,6 +114,7 @@ def create_tool_start_event(
 def create_tool_end_event(
     event_id: str,
     call_id: str,
+    name: str,
     status: str,
     ms: int,
     result_summary: str
@@ -123,6 +124,7 @@ def create_tool_end_event(
         type=EventType.TOOL_END,
         id=event_id,
         call_id=call_id,
+        name=name,
         status=status,
         ms=ms,
         result_summary=result_summary

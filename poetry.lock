@@ -1155,34 +1155,30 @@ type = ["pygobject-stubs", "pytest-mypy", "shtab", "types-pywin32"]
 
 [[package]]
 name = "langchain"
-version = "1.0.0a10"
+version = "1.0.0a14"
 description = "Building applications with LLMs through composability"
 optional = false
 python-versions = "<4.0.0,>=3.10.0"
 groups = ["main"]
 files = [
-    {file = "langchain-1.0.0a10-py3-none-any.whl", hash = "sha256:cb0c485649f41c323d4c573dffc978dd8f21375351723bfd887604f3040dd31c"},
-    {file = "langchain-1.0.0a10.tar.gz", hash = "sha256:6624d993ba89c864c11e2def294689761c7b761b71b21697ce321b9041e9933a"},
+    {file = "langchain-1.0.0a14-py3-none-any.whl", hash = "sha256:4a634e3996cbc82309279a6a9002d22bb16eec51629f8706744b85d4ae9e9820"},
+    {file = "langchain-1.0.0a14.tar.gz", hash = "sha256:264067fac9f38098c8dc69b348a33c2538e309bd4d20424484bd3ea2e138cc76"},
 ]
 
 [package.dependencies]
-langchain-core = ">=0.3.75,<2.0.0"
-langchain-text-splitters = ">=0.3.11,<2.0.0"
-langgraph = "1.0.0a4"
+langchain-core = ">=1.0.0a7,<2.0.0"
+langgraph = ">=1.0.0a4,<2.0.0"
 pydantic = ">=2.7.4,<3.0.0"
 
 [package.extras]
 anthropic = ["langchain-anthropic"]
 aws = ["langchain-aws"]
-azure-ai = ["langchain-azure-ai"]
-cohere = ["langchain-cohere"]
 community = ["langchain-community"]
 deepseek = ["langchain-deepseek"]
 fireworks = ["langchain-fireworks"]
 google-genai = ["langchain-google-genai"]
 google-vertexai = ["langchain-google-vertexai"]
 groq = ["langchain-groq"]
-huggingface = ["langchain-huggingface"]
 mistralai = ["langchain-mistralai"]
 ollama = ["langchain-ollama"]
 openai = ["langchain-openai"]
@@ -1209,14 +1205,14 @@ pydantic = ">=2.7.4,<3.0.0"
 
 [[package]]
 name = "langchain-core"
-version = "0.3.78"
+version = "1.0.0a8"
 description = "Building applications with LLMs through composability"
 optional = false
-python-versions = "<4.0.0,>=3.9.0"
+python-versions = "<4.0.0,>=3.10.0"
 groups = ["main"]
 files = [
-    {file = "langchain_core-0.3.78-py3-none-any.whl", hash = "sha256:dafc4f7e9fd008f680bf0ffe5904dbaa45992abdb92627b68eccb7b4089cbbf0"},
-    {file = "langchain_core-0.3.78.tar.gz", hash = "sha256:a174a2061f8659b916fd2b1c7d174b3ddd07be7ca45a07aaec442696df5101b6"},
+    {file = "langchain_core-1.0.0a8-py3-none-any.whl", hash = "sha256:abb7e5b1821903db52940486b519927c6c1ee78714c0229b7044325b0ea5cb6c"},
+    {file = "langchain_core-1.0.0a8.tar.gz", hash = "sha256:d371bf1b246e006171e3aeaed274272bd35efe0b07c34c095ffc530dc0ba6dde"},
 ]
 
 [package.dependencies]
@@ -1224,7 +1220,7 @@ jsonpatch = ">=1.33.0,<2.0.0"
 langsmith = ">=0.3.45,<1.0.0"
 packaging = ">=23.2.0,<26.0.0"
 pydantic = ">=2.7.4,<3.0.0"
-PyYAML = ">=5.3.0,<7.0.0"
+pyyaml = ">=5.3.0,<7.0.0"
 tenacity = ">=8.1.0,<8.4.0 || >8.4.0,<10.0.0"
 typing-extensions = ">=4.7.0,<5.0.0"
 
@@ -1245,21 +1241,6 @@ filetype = ">=1.2,<2"
 google-ai-generativelanguage = ">=0.7,<1"
 langchain-core = ">=0.3.75"
 pydantic = ">=2,<3"
-
-[[package]]
-name = "langchain-text-splitters"
-version = "0.3.11"
-description = "LangChain text splitting utilities"
-optional = false
-python-versions = ">=3.9"
-groups = ["main"]
-files = [
-    {file = "langchain_text_splitters-0.3.11-py3-none-any.whl", hash = "sha256:cf079131166a487f1372c8ab5d0bfaa6c0a4291733d9c43a34a16ac9bcd6a393"},
-    {file = "langchain_text_splitters-0.3.11.tar.gz", hash = "sha256:7a50a04ada9a133bbabb80731df7f6ddac51bc9f1b9cab7fa09304d71d38a6cc"},
-]
-
-[package.dependencies]
-langchain-core = ">=0.3.75,<2.0.0"
 
 [[package]]
 name = "langgraph"
@@ -2592,4 +2573,4 @@ dev = ["build", "pytest", "pytest-cov", "twine"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<4.0"
-content-hash = "3e270fdec84f03d67d7991f245dc0c7b5b5c0f8f557c40653ed35b884d6bb66f"
+content-hash = "c5cb19e7ce126971fd91d9326372132456d97068cf1491388ea626fd24c76ddc"

@@ -80,8 +80,55 @@ async def stream_agent_response(
         
         # Start agent invocation using streaming (to detect interrupts)
         config = {"configurable": {"thread_id": thread_id}}
+
+        # Mirror ReactAgent workflow: enforce single-tender scope, build context files,
+        # and enhance the initial user message with tender summary + file index.
+        tender_id = (metadata or {}).get("tender_id")
+
+        # Enforce single-tender-per-thread guard (same as ReactAgent)
+        try:
+            if tender_id:
+                agent._ensure_single_tender_scope(thread_id, tender_id)
+        except Exception as guard_err:
+            # Emit an immediate error event and stop
+            await emitter.emit_error(str(guard_err))
+            yield emitter._event_buffer[-1]
+            return
+
+        # Build context files first - they'll be available in state
+        # (Match ReactAgent implementation exactly)
+        context_files = agent._build_context_files(tender_id) if tender_id else {}
+        
+        # Pre-load summary & file index for main agent to answer generic questions quickly
+        # Subagents won't get this - they only get files in state (via middleware filtering)
+        if tender_id and context_files:
+            tender_summary = context_files.get(agent.CONTEXT_SUMMARY_PATH, "")
+            file_index = context_files.get(agent.CONTEXT_FILE_INDEX_PATH, "")
+            
+            enhanced_query = f"""<tender_context>
+<tender_summary>
+{tender_summary}
+</tender_summary>
+
+<file_index>
+{file_index}
+</file_index>
+</tender_context>
+
+User Query: {user_content}"""
+            messages = [{"role": "user", "content": enhanced_query}]
+        else:
+            messages = [{"role": "user", "content": user_content}]
+
+        # Bootstrap /context files into virtual filesystem state
+        initial_state: Dict[str, Any] = {"messages": messages}
+        if tender_id:
+            initial_state["files"] = context_files
+            # Also store cluster_id at top-level for tools to access without file read
+            initial_state["cluster_id"] = context_files.get(agent.CONTEXT_CLUSTER_ID_PATH, "68c99b8a10844521ad051543")
+
         agent_stream = agent.agent.astream(
-            {"messages": [{"role": "user", "content": user_content}]},
+            initial_state,
             config=config,
             stream_mode="values"
         )

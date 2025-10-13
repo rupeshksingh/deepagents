@@ -18,7 +18,7 @@ TOOL_ARG_WHITELIST: Dict[str, list[str]] = {
     "read_file": ["file_path"],
     "write_file": ["file_path"],
     "edit_file": ["file_path"],
-    "ls": ["directory"],
+    "ls": [],
     "write_todos": [],  # Don't expose todo content in args
     "task": ["subagent_type"],  # Don't expose full description
 }

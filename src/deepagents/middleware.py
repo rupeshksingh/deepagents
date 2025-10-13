@@ -12,9 +12,10 @@ from langchain.agents.middleware import (
 from langchain.agents.middleware.prompt_caching import AnthropicPromptCachingMiddleware
 from langchain_core.tools import BaseTool, tool, InjectedToolCallId, InjectedToolArg
 from langchain_core.messages import ToolMessage
-from langgraph.prebuilt import InjectedState
+from langchain.tools.tool_node import InjectedState
 from langchain.chat_models import init_chat_model
 from langgraph.types import Command
+from langgraph.runtime import Runtime
 from typing import Annotated
 from src.deepagents.state import PlanningState, FilesystemState
 from src.deepagents.tools import write_todos, ls, read_file, write_file, edit_file
@@ -80,7 +81,7 @@ class PlanningMiddleware(AgentMiddleware):
     tools = [write_todos]
 
     def modify_model_request(
-        self, request: ModelRequest, agent_state: PlanningState
+        self, request: ModelRequest, agent_state: PlanningState, runtime: Runtime
     ) -> ModelRequest:
         request.system_prompt = (
             request.system_prompt + "\n\n" + WRITE_TODOS_SYSTEM_PROMPT
@@ -98,12 +99,25 @@ class FilesystemMiddleware(AgentMiddleware):
     tools = [ls, read_file, write_file, edit_file]
 
     def modify_model_request(
-        self, request: ModelRequest, agent_state: FilesystemState
+        self, request: ModelRequest, agent_state: FilesystemState, runtime: Runtime
     ) -> ModelRequest:
         request.system_prompt = (
             request.system_prompt + "\n\n" + FILESYSTEM_SYSTEM_PROMPT
         )
         return request
+    
+    def modify_tool_call(self, tool_call, agent_state):
+        """Inject agent_state files into tool args for cross-graph compatibility."""
+        tool_name = tool_call.get("name", "")
+        # For filesystem tools, inject state from agent_state since InjectedState
+        # doesn't work across graph boundaries (parent → subagent)
+        if tool_name in ["ls", "read_file", "write_file", "edit_file"]:
+            args = tool_call.get("args", {})
+            # Inject minimal state with only 'files' to avoid bloating tool call traces
+            # (Tools only need the files dict, not entire agent state)
+            args["state"] = {"files": agent_state.get("files", {})}
+            tool_call["args"] = args
+        return tool_call
 
 
 ###########################
@@ -129,7 +143,7 @@ class SubAgentMiddleware(AgentMiddleware):
         self.tools = [task_tool]
 
     def modify_model_request(
-        self, request: ModelRequest, agent_state: AgentState
+        self, request: ModelRequest, agent_state: AgentState, runtime: Runtime
     ) -> ModelRequest:
         request.system_prompt = request.system_prompt + "\n\n" + TASK_SYSTEM_PROMPT
         return request
@@ -156,10 +170,11 @@ def _get_agents(
     agents = {
         "general-purpose": create_agent(
             model,
-            prompt=BASE_AGENT_PROMPT,
+            system_prompt=BASE_AGENT_PROMPT,
             tools=default_subagent_tools,
             checkpointer=False,
             middleware=default_subagent_middleware,
+            context_schema=DeepAgentState,  # Ensure 'files' is preserved in state
         )
     }
     for _agent in subagents:
@@ -184,11 +199,11 @@ def _get_agents(
             _middleware = default_subagent_middleware
         agents[_agent["name"]] = create_agent(
             sub_model,
-            prompt=_agent["prompt"],
+            system_prompt=_agent["prompt"],
             tools=_tools,
             middleware=_middleware,
             checkpointer=False,
-            # Note: State schema inherited via FilesystemMiddleware.state_schema
+            context_schema=DeepAgentState,  # Preserve 'files' & compatible structure
         )
     return agents
 
@@ -211,21 +226,16 @@ def create_task_tool(
         if hasattr(tool_obj, 'args_schema') and tool_obj.args_schema is not None:
             schema = tool_obj.args_schema
             if hasattr(schema, 'model_fields'):
-                # Mark injected fields as optional with defaults
                 if 'state' in schema.model_fields:
-                    from pydantic_core import PydanticUndefined
                     field = schema.model_fields['state']
                     field.default = None
                     field.default_factory = None
-                    # Remove from required set
                     if hasattr(schema, '__pydantic_required__'):
                         schema.__pydantic_required__.discard('state')
                 if 'tool_call_id' in schema.model_fields:
-                    from pydantic_core import PydanticUndefined
                     field = schema.model_fields['tool_call_id']
                     field.default = None
                     field.default_factory = None
-                    # Remove from required set
                     if hasattr(schema, '__pydantic_required__'):
                         schema.__pydantic_required__.discard('tool_call_id')
         return tool_obj
@@ -239,8 +249,8 @@ def create_task_tool(
         async def task(
             description: str,
             subagent_type: str,
-            state: Annotated[FilesystemState, InjectedState, InjectedToolArg],
-            tool_call_id: Annotated[str, InjectedToolCallId, InjectedToolArg],
+            state: Annotated[FilesystemState, InjectedState, InjectedToolArg] = None,
+            tool_call_id: Annotated[str, InjectedToolCallId, InjectedToolArg] = "",
         ):
             # Validate required parameters
             if not description or not description.strip():
@@ -255,18 +265,33 @@ def create_task_tool(
 
             sub_agent = agents[subagent_type]
             # Create clean state for subagent with ONLY the task description
-            # Subagents should use read_file to access context, not inherit pre-loaded content
-            # This prevents context explosion (main agent's pre-loaded context + subagent's file reads)
-            files_dict = state.get("files", {})
+            # Filter to only pass the three critical context files to subagents
+            files_dict = state.get("files", {}) if state else {}
+            context_files = {
+                k: v for k, v in files_dict.items()
+                if k in [
+                    "/workspace/context/tender_summary.md",
+                    "/workspace/context/file_index.json",
+                    "/workspace/context/cluster_id.txt",
+                ]
+            }
             get_unified_logger().logger.info(
-                f"TASK_PASS_FILES: subagent={subagent_type} files_count={len(files_dict)} keys_sample={list(files_dict.keys())[:3]}"
+                f"TASK_PASS_FILES: subagent={subagent_type} total_files={len(files_dict)} context_files={len(context_files)} keys={list(context_files.keys())}"
             )
             subagent_state = {
                 "messages": [{"role": "user", "content": description}],
-                "files": files_dict,  # Pass files dict for read_file access
+                "files": context_files,  # Only pass context files
+                # Get cluster_id from top-level state, not file content
+                "cluster_id": state.get("cluster_id") if state else None,
                 # Don't pass todos or other accumulated context
             }
+            get_unified_logger().logger.warning(
+                f"SUBAGENT_INVOKE_DEBUG: about to invoke {subagent_type}, state_keys={list(subagent_state.keys())}, files_in_state={len(subagent_state.get('files', {}))}"
+            )
             result = await sub_agent.ainvoke(subagent_state)
+            get_unified_logger().logger.warning(
+                f"SUBAGENT_RESULT_DEBUG: {subagent_type} returned, result_keys={list(result.keys()) if isinstance(result, dict) else 'not_dict'}, files_in_result={len(result.get('files', {})) if isinstance(result, dict) else 0}"
+            )
             state_update = {}
             for k, v in result.items():
                 if k not in ["todos", "messages"]:
@@ -291,8 +316,8 @@ def create_task_tool(
         def task(
             description: str,
             subagent_type: str,
-            state: Annotated[FilesystemState, InjectedState, InjectedToolArg],
-            tool_call_id: Annotated[str, InjectedToolCallId, InjectedToolArg],
+            state: Annotated[FilesystemState, InjectedState, InjectedToolArg] = None,
+            tool_call_id: Annotated[str, InjectedToolCallId, InjectedToolArg] = "",
         ):
             # Validate required parameters
             if not description or not description.strip():
@@ -307,11 +332,24 @@ def create_task_tool(
 
             sub_agent = agents[subagent_type]
             # Create clean state for subagent with ONLY the task description
-            # Subagents should use read_file to access context, not inherit pre-loaded content
-            # This prevents context explosion (main agent's pre-loaded content + subagent's file reads)
+            # Filter to only pass the three critical context files to subagents
+            files_dict = state.get("files", {}) if state else {}
+            context_files = {
+                k: v for k, v in files_dict.items()
+                if k in [
+                    "/workspace/context/tender_summary.md",
+                    "/workspace/context/file_index.json",
+                    "/workspace/context/cluster_id.txt",
+                ]
+            }
+            get_unified_logger().logger.info(
+                f"TASK_PASS_FILES: subagent={subagent_type} total_files={len(files_dict)} context_files={len(context_files)} keys={list(context_files.keys())}"
+            )
             subagent_state = {
                 "messages": [{"role": "user", "content": description}],
-                "files": state.get("files", {}),  # Pass files dict for read_file access
+                "files": context_files,  # Only pass context files
+                # Get cluster_id from top-level state, not file content
+                "cluster_id": state.get("cluster_id") if state else None,
                 # Don't pass todos or other accumulated context
             }
             result = sub_agent.invoke(subagent_state)
@@ -331,4 +369,5 @@ def create_task_tool(
             )
 
     # Fix the tool schema to remove injected parameters
-    return _fix_task_tool_schema(task)
+    from src.deepagents.tools import _fix_injected_params_schema as _fix_schema
+    return _fix_schema(task)

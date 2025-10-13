@@ -167,7 +167,7 @@ if __name__ == "__main__":
         print("\n" + "⚠" * 35)
         print("No query provided. Using default test query...")
         print("⚠" * 35)
-        query = "Identify the most significant risks for us as a supplier in this framework agreement. Divide the analysis into three areas: (A) Breach and penalties (Rammeaftale/Bilag C), (B) Requirements for CSR (Bilag E), and (C) Rules regarding auditing (Bilag D)."
+        query = "Use the advanced_tender_analyst subagent to list all available context files using the ls tool and then read the cluster_id.txt file. Report exactly what files are visible to the subagent and what the cluster_id value is."
     
     if not tender_id:
         print("\n" + "❌" * 35)

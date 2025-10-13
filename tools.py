@@ -4,7 +4,7 @@ import os
 from typing import Annotated, Any, Dict, List, Optional
 
 from dotenv import load_dotenv
-from langchain_core.tools import tool
+from langchain_core.tools import tool, InjectedToolArg
 from langgraph.prebuilt import InjectedState
 from pymongo import MongoClient
 from qdrant_client.http import models as rest
@@ -26,6 +26,25 @@ load_dotenv()
 
 uri = os.getenv("MONGODB_URL")
 mongo_client = MongoClient(uri)
+
+
+def _fix_injected_params_schema(tool_obj):
+    """Remove injected params from tool schema to prevent validation errors."""
+    if hasattr(tool_obj, 'args_schema') and tool_obj.args_schema is not None:
+        schema = tool_obj.args_schema
+        if hasattr(schema, 'model_fields'):
+            for param_name in ['state', 'tool_call_id']:
+                if param_name in schema.model_fields:
+                    field = schema.model_fields[param_name]
+                    field.default = None
+                    field.default_factory = None
+                    # Remove from required set if present (Pydantic v2)
+                    if hasattr(schema, '__pydantic_required__'):
+                        schema.__pydantic_required__.discard(param_name)
+            # Rebuild the model to regenerate the schema
+            if hasattr(schema, 'model_rebuild'):
+                schema.model_rebuild(force=True)
+    return tool_obj
 
 
 def _targeted_hybrid_search(
@@ -74,7 +93,7 @@ def _targeted_hybrid_search(
 @log_tool_call
 async def search_tender_corpus(
     query: str,
-    state: Annotated[FilesystemState, InjectedState],
+    state: Annotated[FilesystemState, InjectedState, InjectedToolArg] = None,
     file_ids: Optional[List[str]] = None,
     org_id: int = 1,
 ) -> str:
@@ -82,7 +101,13 @@ async def search_tender_corpus(
     try:
         # Get cluster_id from state (set during initialization)
         from react_agent import ReactAgent
-        cluster_id = state.get("files", {}).get(ReactAgent.CONTEXT_CLUSTER_ID_PATH, "UNKNOWN")
+        files = state.get("files", {}) if state else {}
+        # Prefer explicit cluster_id in state, then context file, then hard default
+        cluster_id = (
+            (state.get("cluster_id") if state else None)
+            or files.get(ReactAgent.CONTEXT_CLUSTER_ID_PATH)
+            or "68c99b8a10844521ad051543"
+        )
         
         results = _targeted_hybrid_search(
             query, cluster_id, org_id, file_id_filters=file_ids
@@ -134,6 +159,10 @@ Synthesize the above chunks into a clear, actionable answer that the agent can d
         
     except Exception as e:  # noqa: BLE001
         return f"Error in search_tender_corpus: {str(e)}"
+
+
+# Apply schema fix to remove injected params from validation
+search_tender_corpus = _fix_injected_params_schema(search_tender_corpus)
 
 
 @tool

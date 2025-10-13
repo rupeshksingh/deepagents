@@ -1,8 +1,8 @@
 fastembed==0.7.3
-langchain==1.0.0a9
+langchain==1.0.0a12
 langchain_cohere==0.4.6
-langchain_openai==0.3.33 
-langchain_anthropic==0.3.21
+langchain_openai==1.0.0a3
+langchain_anthropic==1.0.0a3
 langchain_qdrant==0.2.1
 langgraph-checkpoint-mongodb==0.2.1
 pymongo==4.15.1

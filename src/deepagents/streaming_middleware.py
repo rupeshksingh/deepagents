@@ -104,7 +104,7 @@ class StreamingMiddleware(AgentMiddleware):
                 
                 # Emit tool_end event
                 asyncio.create_task(
-                    emitter.emit_tool_end(tool_call_id, status, execution_ms, result_summary)
+                    emitter.emit_tool_end(tool_call_id, tool_name, status, execution_ms, result_summary)
                 )
         except Exception as e:
             logger.warning(f"Failed to emit tool_end event: {e}")

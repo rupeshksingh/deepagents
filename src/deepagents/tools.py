@@ -14,6 +14,26 @@ from src.deepagents.prompts import (
 )
 from src.deepagents.logging_utils import log_tool_call
 
+
+def _fix_injected_params_schema(tool_obj):
+    """Remove injected params from tool schema to prevent validation errors."""
+    if hasattr(tool_obj, 'args_schema') and tool_obj.args_schema is not None:
+        schema = tool_obj.args_schema
+        if hasattr(schema, 'model_fields'):
+            for param_name in ['state', 'tool_call_id']:
+                if param_name in schema.model_fields:
+                    field = schema.model_fields[param_name]
+                    field.default = None
+                    field.default_factory = None
+                    # Remove from required set if present (Pydantic v2)
+                    if hasattr(schema, '__pydantic_required__'):
+                        schema.__pydantic_required__.discard(param_name)
+            # Rebuild the model to regenerate the schema
+            if hasattr(schema, 'model_rebuild'):
+                schema.model_rebuild(force=True)
+    return tool_obj
+
+
 def _normalize_path(file_path: str, files_dict: dict[str, str]) -> str:
     """Normalize common path variants to keys present in files_dict.
 
@@ -73,22 +93,32 @@ def write_todos(
         }
     )
 
+# Apply schema fix to remove injected params from validation
+write_todos = _fix_injected_params_schema(write_todos)
+
+
 @tool(description=LIST_FILES_TOOL_DESCRIPTION)
 @log_tool_call
-def ls(state: Annotated[FilesystemState, InjectedState, InjectedToolArg]) -> list[str]:
+def ls(
+    state: Annotated[FilesystemState, InjectedState, InjectedToolArg] = None,
+) -> list[str]:
     """List all files"""
-    return list(state.get("files", {}).keys())
+    files = state.get("files", {}) if state else {}
+    return list(files.keys())
+
+# Apply schema fix to remove injected params from validation
+ls = _fix_injected_params_schema(ls)
 
 
 @tool(description=READ_FILE_TOOL_DESCRIPTION)
 @log_tool_call
 def read_file(
     file_path: str,
-    state: Annotated[FilesystemState, InjectedState, InjectedToolArg],
+    state: Annotated[FilesystemState, InjectedState, InjectedToolArg] = None,
     offset: int = 0,
     limit: int = 2000,
 ) -> str:
-    mock_filesystem = state.get("files", {})
+    mock_filesystem = state.get("files", {}) if state else {}
     normalized = _normalize_path(file_path, mock_filesystem)
     if normalized not in mock_filesystem:
         return f"Error: File '{file_path}' not found"
@@ -117,6 +147,9 @@ def read_file(
         result_lines.append(f"{line_number:6d}\t{line_content}")
 
     return "\n".join(result_lines)
+
+# Apply schema fix to remove injected params from validation
+read_file = _fix_injected_params_schema(read_file)
 
 
 @tool(description=WRITE_FILE_TOOL_DESCRIPTION)
@@ -151,6 +184,9 @@ def write_file(
         }
     )
 
+# Apply schema fix to remove injected params from validation
+write_file = _fix_injected_params_schema(write_file)
+
 
 @tool(description=EDIT_FILE_TOOL_DESCRIPTION)
 @log_tool_call
@@ -158,12 +194,12 @@ def edit_file(
     file_path: str,
     old_string: str,
     new_string: str,
-    state: Annotated[FilesystemState, InjectedState, InjectedToolArg],
-    tool_call_id: Annotated[str, InjectedToolCallId, InjectedToolArg],
+    state: Annotated[FilesystemState, InjectedState, InjectedToolArg] = None,
+    tool_call_id: Annotated[str, InjectedToolCallId, InjectedToolArg] = "",
     replace_all: bool = False,
 ) -> Union[Command, str]:
     """Write to a file."""
-    mock_filesystem = state.get("files", {})
+    mock_filesystem = state.get("files", {}) if state else {}
     normalized = _normalize_path(file_path, mock_filesystem)
     if normalized not in mock_filesystem:
         return f"Error: File '{file_path}' not found"
@@ -197,3 +233,6 @@ def edit_file(
             "messages": [ToolMessage(result_msg, tool_call_id=tool_call_id)],
         }
     )
+
+# Apply schema fix to remove injected params from validation
+edit_file = _fix_injected_params_schema(edit_file)

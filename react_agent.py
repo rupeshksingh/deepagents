@@ -250,17 +250,16 @@ class ReactAgent:
                 }
                 return
 
-            # Build context files first
+            # Build context files first - they'll be available in state
             context_files = self._build_context_files(tender_id) if tender_id else {}
             
-            # Pre-load critical context into the initial message to avoid LLM tool calls
+            # Pre-load summary & file index for main agent to answer generic questions quickly
+            # Subagents won't get this - they only get files in state (via middleware filtering)
             if tender_id and context_files:
                 tender_summary = context_files.get(self.CONTEXT_SUMMARY_PATH, "")
                 file_index = context_files.get(self.CONTEXT_FILE_INDEX_PATH, "")
                 
-                enhanced_query = f"""Tender ID: {tender_id}
-
-<tender_context>
+                enhanced_query = f"""<tender_context>
 <tender_summary>
 {tender_summary}
 </tender_summary>
@@ -294,6 +293,8 @@ User Query: {user_query}"""
             state_input: Dict[str, Any] = {"messages": messages}
             if tender_id:
                 state_input["files"] = context_files
+                # Also store cluster_id at top-level for tools to access without file read
+                state_input["cluster_id"] = context_files.get(self.CONTEXT_CLUSTER_ID_PATH, "68c99b8a10844521ad051543")
 
             yield {
                 "chunk_type": "start",
@@ -388,17 +389,16 @@ User Query: {user_query}"""
                     "success": False,
                 }
 
-            # Build context files first
+            # Build context files first - they'll be available in state
             context_files = self._build_context_files(tender_id) if tender_id else {}
             
-            # Pre-load critical context into the initial message to avoid LLM tool calls
+            # Pre-load summary & file index for main agent to answer generic questions quickly
+            # Subagents won't get this - they only get files in state (via middleware filtering)
             if tender_id and context_files:
                 tender_summary = context_files.get(self.CONTEXT_SUMMARY_PATH, "")
                 file_index = context_files.get(self.CONTEXT_FILE_INDEX_PATH, "")
                 
-                enhanced_query = f"""Tender ID: {tender_id}
-
-<tender_context>
+                enhanced_query = f"""<tender_context>
 <tender_summary>
 {tender_summary}
 </tender_summary>
@@ -423,6 +423,7 @@ User Query: {user_query}"""
             state_input: Dict[str, Any] = {"messages": messages}
             if tender_id:
                 state_input["files"] = context_files
+                state_input["cluster_id"] = context_files.get(self.CONTEXT_CLUSTER_ID_PATH, "68c99b8a10844521ad051543")
 
             response = await self.agent.ainvoke(state_input, config=config)
 

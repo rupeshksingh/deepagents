@@ -188,6 +188,7 @@ class StreamingEventEmitter:
     async def emit_tool_end(
         self,
         call_id: str,
+        name: str,
         status: str,
         ms: int,
         result_summary: str
@@ -197,6 +198,7 @@ class StreamingEventEmitter:
         event = create_tool_end_event(
             self._generate_event_id(),
             call_id,
+            name,
             status,
             ms,
             result_summary
