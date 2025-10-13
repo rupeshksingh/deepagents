@@ -2,7 +2,7 @@ from langchain_core.tools import tool, InjectedToolCallId, InjectedToolArg
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 from typing import Annotated, Union, Optional
-from langgraph.prebuilt import InjectedState
+from langchain.tools.tool_node import InjectedState
 from pydantic import create_model
 from src.deepagents.state import Todo, FilesystemState
 from src.deepagents.prompts import (

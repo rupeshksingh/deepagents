@@ -5,10 +5,9 @@ from typing import Annotated, Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 from langchain_core.tools import tool, InjectedToolArg
-from langgraph.prebuilt import InjectedState
 from pymongo import MongoClient
 from qdrant_client.http import models as rest
-
+from langchain.tools.tool_node import InjectedState
 from src.deepagents.logging_utils import log_tool_call
 from src.deepagents.state import FilesystemState
 
