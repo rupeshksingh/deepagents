@@ -80,7 +80,7 @@ async def stream_agent_response(
         
         # Start agent invocation using streaming (to detect interrupts)
         config = {"configurable": {"thread_id": thread_id}}
-        agent_stream = agent.agent.stream(
+        agent_stream = agent.agent.astream(
             {"messages": [{"role": "user", "content": user_content}]},
             config=config,
             stream_mode="values"
@@ -98,9 +98,8 @@ async def stream_agent_response(
             """Background task that runs the agent stream."""
             nonlocal last_chunk, interrupt_detected, interrupt_data
             try:
-                # LangGraph's stream() returns a sync generator, iterate with regular for
-                # but yield control to event loop between iterations
-                for chunk in agent_stream:
+                # astream() returns async generator
+                async for chunk in agent_stream:
                     last_chunk = chunk
                     
                     # Check for interrupts (HITL requests)
@@ -110,9 +109,6 @@ async def stream_agent_response(
                         interrupt_data = interrupt_info[0] if interrupt_info else None
                         logger.info(f"HITL interrupt detected for message {message_id}")
                         break
-                    
-                    # Yield control to event loop
-                    await asyncio.sleep(0)
             except Exception as e:
                 logger.error(f"Agent stream error: {e}")
             finally:
@@ -240,7 +236,16 @@ async def stream_agent_response(
             if "messages" in last_chunk and last_chunk["messages"]:
                 last_message = last_chunk["messages"][-1]
                 if isinstance(last_message, AIMessage):
-                    final_response = last_message.content
+                    # Handle both string and list content
+                    content = last_message.content
+                    if isinstance(content, list):
+                        # Multiple content blocks - join text blocks
+                        final_response = " ".join([
+                            block.get("text", "") if isinstance(block, dict) else str(block)
+                            for block in content
+                        ])
+                    else:
+                        final_response = str(content)
             
             if final_response:
                 full_response = final_response
@@ -269,17 +274,12 @@ async def stream_agent_response(
             processing_time_ms=processing_time_ms
         )
         
-        # Batch write all events to DB
-        events = emitter.get_buffered_events()
-        event_persistence.batch_write_events(
-            message_id=message_id,
-            chat_id=chat_id,
-            events=events
-        )
+        # Note: Events already persisted in real-time via append_event()
+        # No need for batch write which would cause duplicate key errors
         
         logger.info(
             f"Streaming completed for message {message_id}: "
-            f"{processing_time_ms}ms, {len(events)} events, {tool_call_count} tool calls"
+            f"{processing_time_ms}ms, {tool_call_count} tool calls"
         )
         
     except Exception as e:
@@ -297,16 +297,8 @@ async def stream_agent_response(
             error=str(e)
         )
         
-        # Still try to save events
-        try:
-            events = emitter.get_buffered_events()
-            event_persistence.batch_write_events(
-                message_id=message_id,
-                chat_id=chat_id,
-                events=events
-            )
-        except Exception as persist_error:
-            logger.error(f"Failed to persist events after error: {persist_error}")
+        # Note: Events already persisted in real-time via append_event()
+        # during successful parts of the stream
     
     finally:
         # Clean up
