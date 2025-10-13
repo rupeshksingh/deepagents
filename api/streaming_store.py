@@ -84,6 +84,7 @@ async def stream_agent_response(
         # Mirror ReactAgent workflow: enforce single-tender scope, build context files,
         # and enhance the initial user message with tender summary + file index.
         tender_id = (metadata or {}).get("tender_id")
+        logger.warning(f"STREAMING_METADATA_DEBUG: metadata={metadata}, tender_id={tender_id}")
 
         # Enforce single-tender-per-thread guard (same as ReactAgent)
         try:
@@ -98,6 +99,7 @@ async def stream_agent_response(
         # Build context files first - they'll be available in state
         # (Match ReactAgent implementation exactly)
         context_files = agent._build_context_files(tender_id) if tender_id else {}
+        logger.info(f"STREAMING_DEBUG: tender_id={tender_id}, context_files_count={len(context_files)}, files_keys={list(context_files.keys())[:3]}")
         
         # Pre-load summary & file index for main agent to answer generic questions quickly
         # Subagents won't get this - they only get files in state (via middleware filtering)
@@ -121,11 +123,16 @@ User Query: {user_content}"""
             messages = [{"role": "user", "content": user_content}]
 
         # Bootstrap /context files into virtual filesystem state
-        initial_state: Dict[str, Any] = {"messages": messages}
-        if tender_id:
-            initial_state["files"] = context_files
+        # IMPORTANT: files must be set unconditionally so checkpointer doesn't drop them
+        initial_state: Dict[str, Any] = {
+            "messages": messages,
+            "files": context_files,  # Always set, even if empty dict
+        }
+        if tender_id and context_files:
             # Also store cluster_id at top-level for tools to access without file read
             initial_state["cluster_id"] = context_files.get(agent.CONTEXT_CLUSTER_ID_PATH, "68c99b8a10844521ad051543")
+        
+        logger.info(f"STREAMING_INITIAL_STATE: keys={list(initial_state.keys())}, files_in_state={len(initial_state.get('files', {}))}")
 
         agent_stream = agent.agent.astream(
             initial_state,
@@ -133,82 +140,70 @@ User Query: {user_content}"""
             stream_mode="values"
         )
         
-        # Decouple emitter draining from agent chunk cadence
-        # Run agent in background while continuously draining emitter
+        # Stream agent chunks and simultaneously drain emitter queue
+        # Process in same async context so StreamingMiddleware can access emitter
         heartbeat_interval = 15  # seconds
         interrupt_detected = False
         interrupt_data = None
-        agent_done = asyncio.Event()
         last_chunk = None
         
-        async def _run_agent():
-            """Background task that runs the agent stream."""
-            nonlocal last_chunk, interrupt_detected, interrupt_data
-            try:
-                # astream() returns async generator
-                async for chunk in agent_stream:
-                    last_chunk = chunk
-                    
-                    # Check for interrupts (HITL requests)
-                    if "__interrupt__" in chunk:
-                        interrupt_detected = True
-                        interrupt_info = chunk["__interrupt__"]
-                        interrupt_data = interrupt_info[0] if interrupt_info else None
-                        logger.info(f"HITL interrupt detected for message {message_id}")
-                        break
-            except Exception as e:
-                logger.error(f"Agent stream error: {e}")
-            finally:
-                agent_done.set()
-        
-        # Start agent in background
-        asyncio.create_task(_run_agent())
-        
-        # Continuously drain emitter while agent runs
         from api.streaming.events import EventType
         last_emit_time = datetime.now(timezone.utc)
+        last_heartbeat_check = datetime.now(timezone.utc)
         
-        while not agent_done.is_set():
-            # Try to get next event from emitter
-            evt = await emitter.get_next(timeout=0.2)
-            
-            if evt:
-                # Yield event immediately
-                yield evt
-                last_emit_time = datetime.now(timezone.utc)
+        # Process agent stream and emitter concurrently
+        try:
+            async for chunk in agent_stream:
+                last_chunk = chunk
                 
-                # Track tool calls for final summary (fix enum comparison)
-                if evt.type == EventType.TOOL_END or getattr(evt.type, "value", None) == "tool_end":
-                    tool_call_count += 1
+                # Check for interrupts (HITL requests)
+                if "__interrupt__" in chunk:
+                    interrupt_detected = True
+                    interrupt_info = chunk["__interrupt__"]
+                    interrupt_data = interrupt_info[0] if interrupt_info else None
+                    logger.info(f"HITL interrupt detected for message {message_id}")
+                    break
                 
-                # Persist non-status events for resumability
-                if evt.type != EventType.STATUS:
-                    try:
-                        event_persistence.append_event(message_id, chat_id, evt)
-                    except Exception as persist_err:
-                        logger.warning(f"Failed to persist event during stream: {persist_err}")
-            else:
-                # No events available - check if we should send heartbeat
+                # Drain emitter between agent chunks
+                while True:
+                    evt = await emitter.get_next(timeout=0.01)
+                    if not evt:
+                        break
+                    yield evt
+                    last_emit_time = datetime.now(timezone.utc)
+                    
+                    if evt.type == EventType.TOOL_END or getattr(evt.type, "value", None) == "tool_end":
+                        tool_call_count += 1
+                    
+                    if evt.type != EventType.STATUS:
+                        try:
+                            event_persistence.append_event(message_id, chat_id, evt)
+                        except Exception as persist_err:
+                            logger.warning(f"Failed to persist event: {persist_err}")
+                
+                # Send heartbeat if needed
                 now = datetime.now(timezone.utc)
-                time_since_last_emit = (now - last_emit_time).total_seconds()
-                
-                if time_since_last_emit > heartbeat_interval:
-                    await emitter.emit_status(f"Processing... ({int(time_since_last_emit)}s elapsed)")
-                    yield emitter._event_buffer[-1]
-                    last_emit_time = now
+                if (now - last_heartbeat_check).total_seconds() > 5:
+                    time_since_last_emit = (now - last_emit_time).total_seconds()
+                    if time_since_last_emit > heartbeat_interval:
+                        await emitter.emit_status(f"Processing... ({int(time_since_last_emit)}s elapsed)")
+                        yield emitter._event_buffer[-1]
+                        last_emit_time = now
+                    last_heartbeat_check = now
         
-        # Agent finished - drain any remaining events in queue
+        except Exception as e:
+            logger.error(f"Agent stream error: {e}")
+        
+        # Drain any remaining events after agent finishes
         while True:
             evt = await emitter.get_next(timeout=0.05)
             if not evt:
                 break
             yield evt
             
-            # Track tool calls (fix enum comparison)
             if evt.type == EventType.TOOL_END or getattr(evt.type, "value", None) == "tool_end":
                 tool_call_count += 1
             
-            # Persist non-status events
             if evt.type != EventType.STATUS:
                 try:
                     event_persistence.append_event(message_id, chat_id, evt)

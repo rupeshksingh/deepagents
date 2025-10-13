@@ -289,10 +289,12 @@ User Query: {user_query}"""
                 return
 
             # Bootstrap /context files into virtual filesystem state
-            # (Files still available via read_file for reference, but context is pre-loaded)
-            state_input: Dict[str, Any] = {"messages": messages}
-            if tender_id:
-                state_input["files"] = context_files
+            # IMPORTANT: files must be set unconditionally so checkpointer doesn't drop them
+            state_input: Dict[str, Any] = {
+                "messages": messages,
+                "files": context_files,  # Always set, even if empty dict
+            }
+            if tender_id and context_files:
                 # Also store cluster_id at top-level for tools to access without file read
                 state_input["cluster_id"] = context_files.get(self.CONTEXT_CLUSTER_ID_PATH, "68c99b8a10844521ad051543")
 
@@ -419,10 +421,12 @@ User Query: {user_query}"""
             self._ensure_single_tender_scope(thread_id, tender_id)
 
             # Bootstrap /context files into virtual filesystem state
-            # (Files still available via read_file for reference, but context is pre-loaded)
-            state_input: Dict[str, Any] = {"messages": messages}
-            if tender_id:
-                state_input["files"] = context_files
+            # IMPORTANT: files must be set unconditionally so checkpointer doesn't drop them
+            state_input: Dict[str, Any] = {
+                "messages": messages,
+                "files": context_files,  # Always set, even if empty dict
+            }
+            if tender_id and context_files:
                 state_input["cluster_id"] = context_files.get(self.CONTEXT_CLUSTER_ID_PATH, "68c99b8a10844521ad051543")
 
             response = await self.agent.ainvoke(state_input, config=config)

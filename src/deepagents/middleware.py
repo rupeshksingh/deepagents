@@ -108,14 +108,18 @@ class FilesystemMiddleware(AgentMiddleware):
     
     def modify_tool_call(self, tool_call, agent_state):
         """Inject agent_state files into tool args for cross-graph compatibility."""
+        import logging
+        logger = logging.getLogger(__name__)
         tool_name = tool_call.get("name", "")
         # For filesystem tools, inject state from agent_state since InjectedState
         # doesn't work across graph boundaries (parent → subagent)
         if tool_name in ["ls", "read_file", "write_file", "edit_file"]:
             args = tool_call.get("args", {})
+            files_dict = agent_state.get("files", {})
+            logger.warning(f"FILESYSTEM_MIDDLEWARE: tool={tool_name}, agent_state_keys={list(agent_state.keys()) if isinstance(agent_state, dict) else 'not_dict'}, files_count={len(files_dict)}, files_keys={list(files_dict.keys())[:3]}")
             # Inject minimal state with only 'files' to avoid bloating tool call traces
             # (Tools only need the files dict, not entire agent state)
-            args["state"] = {"files": agent_state.get("files", {})}
+            args["state"] = {"files": files_dict}
             tool_call["args"] = args
         return tool_call
 
