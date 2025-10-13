@@ -8,9 +8,10 @@ New endpoints:
 """
 
 import asyncio
+import json
 import logging
 from typing import Optional
-from fastapi import APIRouter, HTTPException, status, Query
+from fastapi import APIRouter, HTTPException, status, Query, Request
 from fastapi.responses import StreamingResponse
 from pymongo import MongoClient
 
@@ -70,6 +71,16 @@ class StreamingApiRouter:
         # Chat endpoints
         self.router.add_api_route(
             "/users/{user_id}/chats",
+            self.list_user_chats,
+            methods=["GET"],
+            response_model=PaginatedResponse[ChatResponse],
+            status_code=status.HTTP_200_OK,
+            summary="List user chats",
+            description="Get all chats for a user (paginated)."
+        )
+        
+        self.router.add_api_route(
+            "/users/{user_id}/chats",
             self.create_chat,
             methods=["POST"],
             response_model=ChatResponse,
@@ -127,6 +138,16 @@ class StreamingApiRouter:
             summary="Get message events (replay)",
             description="Retrieve events for replay/debugging."
         )
+        
+        # HITL resume endpoint
+        self.router.add_api_route(
+            "/chats/{chat_id}/messages/{message_id}/resume",
+            self.resume_interrupted_message,
+            methods=["POST"],
+            status_code=status.HTTP_202_ACCEPTED,
+            summary="Resume interrupted message (HITL)",
+            description="Resume an interrupted message with human input (accept/edit/respond/ignore)."
+        )
     
     # ========================================================================
     # User & Chat Endpoints
@@ -150,6 +171,42 @@ class StreamingApiRouter:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to get/create user: {str(e)}"
+            )
+    
+    async def list_user_chats(
+        self,
+        user_id: str,
+        page: int = Query(1, ge=1, description="Page number (1-based)"),
+        page_size: int = Query(20, ge=1, le=100, description="Items per page")
+    ) -> PaginatedResponse[ChatResponse]:
+        """
+        Get all chats for a user (paginated).
+        
+        Args:
+            user_id: User identifier
+            page: Page number (1-based)
+            page_size: Number of chats per page
+            
+        Returns:
+            PaginatedResponse with chat list
+        """
+        try:
+            # Get or create user to ensure they exist
+            self.store.get_or_create_user(user_id)
+            
+            # Get paginated chats for user
+            result = self.store.list_user_chats(
+                user_id=user_id,
+                page=page,
+                page_size=page_size
+            )
+            
+            return result
+        except Exception as e:
+            logger.error(f"Failed to list chats for user {user_id}: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to list chats: {str(e)}"
             )
     
     async def create_chat(
@@ -356,7 +413,9 @@ class StreamingApiRouter:
     async def stream_message(
         self,
         chat_id: str,
-        message_id: str
+        message_id: str,
+        request: Request,
+        since: Optional[str] = Query(None, description="Event ID to resume from")
     ) -> StreamingResponse:
         """
         Stream agent events via Server-Sent Events.
@@ -406,10 +465,10 @@ class StreamingApiRouter:
             # We need its content to pass to the agent
             messages = self.store.list_chat_messages(chat_id, page=1, page_size=100)
             user_content = None
-            for msg in messages.items:
+            # Sort messages chronologically (oldest first) to find the latest user message before assistant
+            for msg in sorted(messages.items, key=lambda m: m.created_at, reverse=False):
                 if msg.role.value == "user" and msg.created_at <= message.created_at:
                     user_content = msg.content
-                    break
             
             if not user_content:
                 raise HTTPException(
@@ -421,6 +480,24 @@ class StreamingApiRouter:
             async def generate_sse():
                 """Generate SSE stream with proper formatting."""
                 try:
+                    # Check for resume from Last-Event-ID header or since query param
+                    last_event_id = request.headers.get("last-event-id") or since
+                    
+                    # Replay historical events first if resuming
+                    if last_event_id:
+                        logger.info(f"Resuming stream from event {last_event_id}")
+                        past_events = self.event_persistence.get_events(
+                            message_id=message_id,
+                            since_id=last_event_id,
+                            limit=1000
+                        )
+                        for e in past_events:
+                            # Format historical event as SSE
+                            yield f"retry: 3000\n"
+                            yield f"event: {e.get('type', 'status')}\n"
+                            yield f"id: {e.get('id', '')}\n"
+                            yield f"data: {json.dumps(e, default=str)}\n\n"
+                    
                     # Import here to avoid circular dependency
                     from api.streaming_store import stream_agent_response
                     
@@ -432,16 +509,14 @@ class StreamingApiRouter:
                         user_content=user_content,
                         metadata=message.metadata or {}
                     ):
-                        # Format as SSE
+                        # Format as SSE with proper event type value
                         # event: {type}
                         # id: {id}
                         # data: {json}
-                        yield f"event: {event.type}\n"
+                        yield f"retry: 3000\n"
+                        yield f"event: {event.type.value if hasattr(event.type, 'value') else event.type}\n"
                         yield f"id: {event.id}\n"
                         yield f"data: {event.model_dump_json(exclude_none=True)}\n\n"
-                    
-                    # Send heartbeat comment every 15s during pauses
-                    # (handled by stream_agent_response)
                     
                 except Exception as e:
                     logger.error(f"Streaming error for message {message_id}: {e}")
@@ -451,6 +526,7 @@ class StreamingApiRouter:
                         f"error_{message_id}",
                         f"Streaming error: {str(e)}"
                     )
+                    yield f"retry: 3000\n"
                     yield f"event: error\n"
                     yield f"id: {error_event.id}\n"
                     yield f"data: {error_event.model_dump_json()}\n\n"
@@ -540,6 +616,133 @@ class StreamingApiRouter:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to get events: {str(e)}"
+            )
+    
+    # ========================================================================
+    # HITL Resume Endpoint
+    # ========================================================================
+    
+    async def resume_interrupted_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        request: dict
+    ) -> dict:
+        """
+        Resume an interrupted message with human input (HITL).
+        
+        Args:
+            chat_id: Chat identifier
+            message_id: Message identifier
+            request: Resume request with action type and args
+                - action: "accept", "edit", "respond", or "ignore"
+                - args: Arguments for the action (optional)
+                
+        Returns:
+            dict with completion status and final response
+        """
+        try:
+            validate_uuid(chat_id)
+            validate_object_id(message_id)
+            
+            # Get message to verify it's interrupted
+            message = self.store.get_message(message_id)
+            if not message:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Message {message_id} not found"
+                )
+            
+            # Check if message is interrupted
+            metadata = message.get("metadata", {})
+            if not metadata.get("interrupted"):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Message is not interrupted"
+                )
+            
+            # Get thread_id from metadata
+            thread_id = metadata.get("thread_id")
+            if not thread_id:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Thread ID not found in message metadata"
+                )
+            
+            # Parse resume action
+            action = request.get("action", "accept")
+            args = request.get("args")
+            
+            # Build resume command
+            from langgraph.types import Command
+            
+            if action == "accept":
+                resume_args = [{"type": "accept"}]
+            elif action == "edit":
+                if not args:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Edit action requires 'args' parameter"
+                    )
+                resume_args = [{"type": "edit", "args": args}]
+            elif action == "respond":
+                if not args:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Respond action requires 'args' parameter (human response)"
+                    )
+                resume_args = [{"type": "respond", "args": args}]
+            elif action == "ignore":
+                resume_args = [{"type": "ignore"}]
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid action: {action}. Must be accept/edit/respond/ignore"
+                )
+            
+            # Resume the agent
+            agent = self.store._get_agent()
+            config = {"configurable": {"thread_id": thread_id}}
+            
+            # Resume with command
+            result = await agent.agent.ainvoke(
+                Command(resume=resume_args),
+                config=config
+            )
+            
+            # Extract final response
+            from langchain_core.messages import AIMessage
+            final_response = ""
+            if "messages" in result and result["messages"]:
+                last_message = result["messages"][-1]
+                if isinstance(last_message, AIMessage):
+                    final_response = last_message.content
+            
+            # Update message with final response
+            from api.models import MessageStatus
+            self.store.update_message_status(
+                message_id,
+                MessageStatus.COMPLETED,
+                content=final_response,
+                metadata={"resumed": True, "resume_action": action}
+            )
+            
+            logger.info(f"Resumed message {message_id} with action: {action}")
+            
+            return {
+                "message_id": message_id,
+                "status": "completed",
+                "action": action,
+                "response": final_response
+            }
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to resume message {message_id}: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to resume message: {str(e)}"
             )
 
 

@@ -1,8 +1,8 @@
-from langchain_core.tools import tool, InjectedToolCallId
+from langchain_core.tools import tool, InjectedToolCallId, InjectedToolArg
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 from typing import Annotated, Union, Optional
-from langchain.agents.tool_node import InjectedState
+from langgraph.prebuilt import InjectedState
 from pydantic import create_model
 from src.deepagents.state import Todo, FilesystemState
 from src.deepagents.prompts import (
@@ -13,11 +13,6 @@ from src.deepagents.prompts import (
     EDIT_FILE_TOOL_DESCRIPTION,
 )
 from src.deepagents.logging_utils import log_tool_call
-
-# NOTE: We intentionally do NOT alter args_schema to remove injected params.
-# InjectedState/InjectedToolCallId will be supplied by the runtime before
-# pydantic validation. Altering args_schema can prevent injection in some
-# stacks, so we avoid it.
 
 def _normalize_path(file_path: str, files_dict: dict[str, str]) -> str:
     """Normalize common path variants to keys present in files_dict.
@@ -66,7 +61,8 @@ def _normalize_path(file_path: str, files_dict: dict[str, str]) -> str:
 @tool(description=WRITE_TODOS_TOOL_DESCRIPTION)
 @log_tool_call
 def write_todos(
-    todos: list[Todo], tool_call_id: Annotated[str, InjectedToolCallId]
+    todos: list[Todo], 
+    tool_call_id: Annotated[str, InjectedToolCallId, InjectedToolArg]
 ) -> Command:
     return Command(
         update={
@@ -79,7 +75,7 @@ def write_todos(
 
 @tool(description=LIST_FILES_TOOL_DESCRIPTION)
 @log_tool_call
-def ls(state: Annotated[FilesystemState, InjectedState]) -> list[str]:
+def ls(state: Annotated[FilesystemState, InjectedState, InjectedToolArg]) -> list[str]:
     """List all files"""
     return list(state.get("files", {}).keys())
 
@@ -88,7 +84,7 @@ def ls(state: Annotated[FilesystemState, InjectedState]) -> list[str]:
 @log_tool_call
 def read_file(
     file_path: str,
-    state: Annotated[FilesystemState, InjectedState],
+    state: Annotated[FilesystemState, InjectedState, InjectedToolArg],
     offset: int = 0,
     limit: int = 2000,
 ) -> str:
@@ -128,8 +124,8 @@ def read_file(
 def write_file(
     file_path: str,
     content: Optional[str] = None,
-    state: Annotated[FilesystemState, InjectedState] = None,
-    tool_call_id: Annotated[str, InjectedToolCallId] = "",
+    state: Annotated[FilesystemState, InjectedState, InjectedToolArg] = None,
+    tool_call_id: Annotated[str, InjectedToolCallId, InjectedToolArg] = "",
 ) -> Union[Command, str]:
     """Write content to a file in the virtual filesystem.
 
@@ -162,8 +158,8 @@ def edit_file(
     file_path: str,
     old_string: str,
     new_string: str,
-    state: Annotated[FilesystemState, InjectedState],
-    tool_call_id: Annotated[str, InjectedToolCallId],
+    state: Annotated[FilesystemState, InjectedState, InjectedToolArg],
+    tool_call_id: Annotated[str, InjectedToolCallId, InjectedToolArg],
     replace_all: bool = False,
 ) -> Union[Command, str]:
     """Write to a file."""

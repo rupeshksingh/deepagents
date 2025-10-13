@@ -10,9 +10,9 @@ from langchain.agents.middleware import (
     SummarizationMiddleware,
 )
 from langchain.agents.middleware.prompt_caching import AnthropicPromptCachingMiddleware
-from langchain_core.tools import BaseTool, tool, InjectedToolCallId
+from langchain_core.tools import BaseTool, tool, InjectedToolCallId, InjectedToolArg
 from langchain_core.messages import ToolMessage
-from langchain.agents.tool_node import InjectedState
+from langgraph.prebuilt import InjectedState
 from langchain.chat_models import init_chat_model
 from langgraph.types import Command
 from typing import Annotated
@@ -211,13 +211,23 @@ def create_task_tool(
         if hasattr(tool_obj, 'args_schema') and tool_obj.args_schema is not None:
             schema = tool_obj.args_schema
             if hasattr(schema, 'model_fields'):
-                # Remove 'state' and 'tool_call_id' from required fields
+                # Mark injected fields as optional with defaults
                 if 'state' in schema.model_fields:
-                    schema.model_fields['state'].default = None
-                    schema.model_fields['state'].is_required = lambda: False
+                    from pydantic_core import PydanticUndefined
+                    field = schema.model_fields['state']
+                    field.default = None
+                    field.default_factory = None
+                    # Remove from required set
+                    if hasattr(schema, '__pydantic_required__'):
+                        schema.__pydantic_required__.discard('state')
                 if 'tool_call_id' in schema.model_fields:
-                    schema.model_fields['tool_call_id'].default = None
-                    schema.model_fields['tool_call_id'].is_required = lambda: False
+                    from pydantic_core import PydanticUndefined
+                    field = schema.model_fields['tool_call_id']
+                    field.default = None
+                    field.default_factory = None
+                    # Remove from required set
+                    if hasattr(schema, '__pydantic_required__'):
+                        schema.__pydantic_required__.discard('tool_call_id')
         return tool_obj
 
     if is_async:
@@ -229,9 +239,13 @@ def create_task_tool(
         async def task(
             description: str,
             subagent_type: str,
-            state: Annotated[FilesystemState, InjectedState],
-            tool_call_id: Annotated[str, InjectedToolCallId],
+            state: Annotated[FilesystemState, InjectedState, InjectedToolArg],
+            tool_call_id: Annotated[str, InjectedToolCallId, InjectedToolArg],
         ):
+            # Validate required parameters
+            if not description or not description.strip():
+                return f"❌ Error: 'description' parameter is required and cannot be empty. The task tool requires BOTH 'subagent_type' AND 'description'. This error usually means the model hit max_tokens while generating tool calls. Please retry with a briefer explanation before the tool calls."
+            
             if subagent_type not in agents:
                 return f"Error: invoked agent of type {subagent_type}, the only allowed types are {[f'`{k}`' for k in agents]}"
 
@@ -277,9 +291,13 @@ def create_task_tool(
         def task(
             description: str,
             subagent_type: str,
-            state: Annotated[FilesystemState, InjectedState],
-            tool_call_id: Annotated[str, InjectedToolCallId],
+            state: Annotated[FilesystemState, InjectedState, InjectedToolArg],
+            tool_call_id: Annotated[str, InjectedToolCallId, InjectedToolArg],
         ):
+            # Validate required parameters
+            if not description or not description.strip():
+                return f"❌ Error: 'description' parameter is required and cannot be empty. The task tool requires BOTH 'subagent_type' AND 'description'. This error usually means the model hit max_tokens while generating tool calls. Please retry with a briefer explanation before the tool calls."
+            
             if subagent_type not in agents:
                 return f"Error: invoked agent of type {subagent_type}, the only allowed types are {[f'`{k}`' for k in agents]}"
 
@@ -312,4 +330,5 @@ def create_task_tool(
                 }
             )
 
-    return task
+    # Fix the tool schema to remove injected parameters
+    return _fix_task_tool_schema(task)

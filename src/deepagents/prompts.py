@@ -444,9 +444,14 @@ WRITE_FILE_TOOL_DESCRIPTION = """Writes to a file in the local filesystem.
 
 Usage:
 - The file_path parameter must be an absolute path, not a relative path
-- The content parameter must be a string
-- The write_file tool will create the a new file.
-- Prefer to edit existing files over creating new ones when possible."""
+- The content parameter is REQUIRED and must be a string - NEVER omit this parameter
+- Both file_path AND content must be provided: write_file(file_path="/path/to/file", content="your content here")
+- The write_file tool will create a new file.
+- Prefer to edit existing files over creating new ones when possible.
+
+CRITICAL: If you call write_file without the content parameter, you will get an error.
+Example WRONG: write_file("/workspace/notes.md")  ← Missing content!
+Example CORRECT: write_file("/workspace/notes.md", "My content here")"""
 
 WRITE_TODOS_SYSTEM_PROMPT = """## `write_todos`
 
@@ -494,9 +499,11 @@ FILESYSTEM_SYSTEM_PROMPT = """## Filesystem Tools `ls`, `read_file`, `write_file
 
 You have access to a local, private filesystem which you can interact with using these tools.
 - ls: list all files in the local filesystem
-- read_file: read a file from the local filesystem
-- write_file: write to a file in the local filesystem
-- edit_file: edit a file in the local filesystem"""
+- read_file(file_path): read a file from the local filesystem
+- write_file(file_path, content): write to a file - REQUIRES BOTH parameters
+- edit_file(file_path, old_string, new_string): edit a file - REQUIRES ALL THREE parameters
+
+CRITICAL: write_file requires BOTH file_path AND content parameters. Never call it with only the path."""
 
 BASE_AGENT_PROMPT = """
 In order to complete the objective that the user asks of you, you have access to a number of standard tools.

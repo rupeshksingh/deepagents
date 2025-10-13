@@ -1,6 +1,17 @@
 """
 Comprehensive Test Suite for Bid Management Agent
 Executes all test cases from Level 0-4 and saves complete results to a single file.
+
+⚠️ DEPRECATION NOTICE ⚠️
+This test file is deprecated and will be removed in v2.0.
+
+Please use the new test suite in tests/:
+  cd tests
+  python test_runner.py --list          # List all tests
+  python test_runner.py L1-01 L2-01     # Run specific tests
+  ./quick_test.sh sanity                # Quick regression
+
+See tests/README.md and tests/MIGRATION.md for details.
 """
 
 import os

@@ -5,7 +5,7 @@ from typing import Annotated, Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 from langchain_core.tools import tool
-from langchain.agents.tool_node import InjectedState
+from langgraph.prebuilt import InjectedState
 from pymongo import MongoClient
 from qdrant_client.http import models as rest
 
@@ -162,7 +162,7 @@ async def retrieve_full_document(
             "Document (markdown):\n" + content
         )
 
-        llm = ChatOpenAI(model="gpt-4.1", temperature=temperature)
+        llm = ChatOpenAI(model="gpt-4o", temperature=temperature)
         resp = await llm.ainvoke(prompt)
         answer_text = getattr(resp, "content", str(resp))
 

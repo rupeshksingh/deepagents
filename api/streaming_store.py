@@ -6,16 +6,21 @@ Handles:
 - Agent invocation with streaming
 - Event persistence
 - Status updates
+- Human-in-the-loop interrupts
 """
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone
 from typing import AsyncGenerator, Dict, Any
 
+from langchain_core.messages import AIMessage
+from langgraph.types import Command
+
 from api.store import ApiStore
 from api.streaming.emitter import StreamingEventEmitter, set_current_emitter
-from api.streaming.events import StreamEvent
+from api.streaming.events import StreamEvent, create_status_event, create_end_event
 from api.streaming.persistence import EventPersistence
 from api.utils import generate_thread_id
 
@@ -73,72 +78,185 @@ async def stream_agent_response(
         agent = store._get_agent()
         thread_id = generate_thread_id(chat_id)
         
-        # Start agent invocation in background
-        agent_task = asyncio.create_task(
-            agent.chat_sync(
-                user_query=user_content,
-                thread_id=thread_id,
-                tender_id=metadata.get("tender_id"),
-                user_id=metadata.get("user_id")
-            )
+        # Start agent invocation using streaming (to detect interrupts)
+        config = {"configurable": {"thread_id": thread_id}}
+        agent_stream = agent.agent.stream(
+            {"messages": [{"role": "user", "content": user_content}]},
+            config=config,
+            stream_mode="values"
         )
         
-        # Stream events as they arrive
+        # Decouple emitter draining from agent chunk cadence
+        # Run agent in background while continuously draining emitter
         heartbeat_interval = 15  # seconds
-        last_heartbeat = datetime.now(timezone.utc)
-        last_event_time = datetime.now(timezone.utc)
+        interrupt_detected = False
+        interrupt_data = None
+        agent_done = asyncio.Event()
+        last_chunk = None
         
-        while True:
-            # Check for new events from emitter
-            event = await emitter.get_next(timeout=1.0)
-            
-            if event:
-                last_event_time = datetime.now(timezone.utc)
-                yield event
-                
-                # Track tool calls for final summary
-                if event.type == "tool_end":
-                    tool_call_count += 1
-            
-            # Check if agent finished
-            if agent_task.done():
-                # Get final result
-                result = await agent_task
-                
-                # Extract final response
-                final_response = result.get("response", "")
-                if final_response:
-                    full_response = final_response
+        async def _run_agent():
+            """Background task that runs the agent stream."""
+            nonlocal last_chunk, interrupt_detected, interrupt_data
+            try:
+                # LangGraph's stream() returns a sync generator, iterate with regular for
+                # but yield control to event loop between iterations
+                for chunk in agent_stream:
+                    last_chunk = chunk
                     
-                    # Stream content in chunks (for progressive rendering)
-                    words = final_response.split()
-                    chunk_size = 10
-                    for i in range(0, len(words), chunk_size):
-                        chunk = " ".join(words[i:i+chunk_size])
-                        await emitter.emit_content(chunk)
-                        yield emitter._event_buffer[-1]
-                        await asyncio.sleep(0.02)  # Small delay for smoothness
+                    # Check for interrupts (HITL requests)
+                    if "__interrupt__" in chunk:
+                        interrupt_detected = True
+                        interrupt_info = chunk["__interrupt__"]
+                        interrupt_data = interrupt_info[0] if interrupt_info else None
+                        logger.info(f"HITL interrupt detected for message {message_id}")
+                        break
+                    
+                    # Yield control to event loop
+                    await asyncio.sleep(0)
+            except Exception as e:
+                logger.error(f"Agent stream error: {e}")
+            finally:
+                agent_done.set()
+        
+        # Start agent in background
+        asyncio.create_task(_run_agent())
+        
+        # Continuously drain emitter while agent runs
+        from api.streaming.events import EventType
+        last_emit_time = datetime.now(timezone.utc)
+        
+        while not agent_done.is_set():
+            # Try to get next event from emitter
+            evt = await emitter.get_next(timeout=0.2)
+            
+            if evt:
+                # Yield event immediately
+                yield evt
+                last_emit_time = datetime.now(timezone.utc)
                 
-                # Emit END event
-                await emitter.emit_end("completed", tool_call_count)
-                yield emitter._event_buffer[-1]
+                # Track tool calls for final summary (fix enum comparison)
+                if evt.type == EventType.TOOL_END or getattr(evt.type, "value", None) == "tool_end":
+                    tool_call_count += 1
                 
+                # Persist non-status events for resumability
+                if evt.type != EventType.STATUS:
+                    try:
+                        event_persistence.append_event(message_id, chat_id, evt)
+                    except Exception as persist_err:
+                        logger.warning(f"Failed to persist event during stream: {persist_err}")
+            else:
+                # No events available - check if we should send heartbeat
+                now = datetime.now(timezone.utc)
+                time_since_last_emit = (now - last_emit_time).total_seconds()
+                
+                if time_since_last_emit > heartbeat_interval:
+                    await emitter.emit_status(f"Processing... ({int(time_since_last_emit)}s elapsed)")
+                    yield emitter._event_buffer[-1]
+                    last_emit_time = now
+        
+        # Agent finished - drain any remaining events in queue
+        while True:
+            evt = await emitter.get_next(timeout=0.05)
+            if not evt:
                 break
+            yield evt
             
-            # Send heartbeat if quiet for too long
-            now = datetime.now(timezone.utc)
-            time_since_last_event = (now - last_event_time).total_seconds()
-            time_since_last_heartbeat = (now - last_heartbeat).total_seconds()
+            # Track tool calls (fix enum comparison)
+            if evt.type == EventType.TOOL_END or getattr(evt.type, "value", None) == "tool_end":
+                tool_call_count += 1
             
-            if time_since_last_event > 5 and time_since_last_heartbeat > heartbeat_interval:
-                # Send status update
-                elapsed_str = f"{int(time_since_last_event)}s"
-                await emitter.emit_status(f"Processing... ({elapsed_str} elapsed)")
-                yield emitter._event_buffer[-1]
-                last_heartbeat = now
+            # Persist non-status events
+            if evt.type != EventType.STATUS:
+                try:
+                    event_persistence.append_event(message_id, chat_id, evt)
+                except Exception as persist_err:
+                    logger.warning(f"Failed to persist tail event: {persist_err}")
+        
+        # Handle interrupt if detected
+        if interrupt_detected:
+            # interrupt_data is a LangGraph Interrupt object, not a dict
+            # Access its value attribute to get the tool call
+            tool_call = {}
+            tool_name = "request_human_input"
+            tool_args = {}
             
-            # Small delay to avoid busy waiting
-            await asyncio.sleep(0.1)
+            if interrupt_data and hasattr(interrupt_data, 'value'):
+                tool_call = interrupt_data.value if isinstance(interrupt_data.value, dict) else {}
+                tool_name = tool_call.get("name", "request_human_input")
+                tool_args = tool_call.get("args", {})
+            
+            question = tool_args.get("question", "Agent needs clarification")
+            context = tool_args.get("context", "")
+            
+            # Emit status event with HITL request
+            status_event = StreamEvent(
+                type="status",
+                id=emitter._generate_event_id(),
+                ts=datetime.now(timezone.utc).isoformat(),
+                text="⏸️ Agent needs human input",
+                md=json.dumps({
+                    "interrupt": True,
+                    "tool": tool_name,
+                    "question": question,
+                    "context": context,
+                    "thread_id": thread_id,
+                    "instructions": "Human input required. Use resume endpoint to continue."
+                })
+            )
+            emitter._event_buffer.append(status_event)
+            yield status_event
+            
+            # Update message status to INTERRUPTED
+            from api.models import MessageStatus
+            store.update_message_status(
+                message_id,
+                MessageStatus.PROCESSING,
+                metadata={
+                    "interrupted": True,
+                    "interrupt_question": question,
+                    "interrupt_context": context,
+                    "thread_id": thread_id
+                }
+            )
+            
+            # Emit END event for this stream
+            await emitter.emit_end("interrupted", tool_call_count)
+            yield emitter._event_buffer[-1]
+            
+            # Persist interrupt events
+            try:
+                event_persistence.append_event(message_id, chat_id, status_event)
+                event_persistence.append_event(message_id, chat_id, emitter._event_buffer[-1])
+            except Exception:
+                pass
+            
+            # Return early - don't process final response
+            return
+        
+        # If no interrupt, process final response
+        if not interrupt_detected and last_chunk:
+            # Extract final response from last chunk
+            final_response = ""
+            if "messages" in last_chunk and last_chunk["messages"]:
+                last_message = last_chunk["messages"][-1]
+                if isinstance(last_message, AIMessage):
+                    final_response = last_message.content
+            
+            if final_response:
+                full_response = final_response
+                
+                # Stream content in chunks (for progressive rendering)
+                words = final_response.split()
+                chunk_size = 10
+                for i in range(0, len(words), chunk_size):
+                    chunk_text = " ".join(words[i:i+chunk_size])
+                    await emitter.emit_content(chunk_text)
+                    yield emitter._event_buffer[-1]
+                    await asyncio.sleep(0.02)  # Small delay for smoothness
+            
+            # Emit END event
+            await emitter.emit_end("completed", tool_call_count)
+            yield emitter._event_buffer[-1]
         
         # Calculate total processing time
         processing_time_ms = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)

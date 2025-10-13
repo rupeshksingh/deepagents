@@ -67,6 +67,46 @@ class EventPersistence:
         except Exception as e:
             logger.warning(f"Error creating indexes: {e}")
     
+    def append_event(
+        self,
+        message_id: str,
+        chat_id: str,
+        event: StreamEvent
+    ) -> bool:
+        """
+        Append a single event to MongoDB (for real-time persistence).
+        
+        Args:
+            message_id: The message this event belongs to
+            chat_id: The chat this message belongs to
+            event: Event to append
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Get current sequence number
+            seq = self.get_event_count(message_id)
+            
+            doc = event.model_dump(exclude_none=True)
+            doc["message_id"] = message_id
+            doc["chat_id"] = chat_id
+            doc["seq"] = seq
+            
+            # Convert ts string to datetime for better querying
+            if "ts" in doc:
+                try:
+                    doc["ts"] = datetime.fromisoformat(doc["ts"].replace('Z', '+00:00'))
+                except Exception:
+                    doc["ts"] = datetime.now(timezone.utc)
+            
+            self.events_collection.insert_one(doc)
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Failed to append event for message {message_id}: {e}")
+            return False
+    
     def batch_write_events(
         self,
         message_id: str,

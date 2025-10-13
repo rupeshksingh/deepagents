@@ -15,6 +15,7 @@ from typing import AsyncGenerator, Dict, Any, Optional, List
 from langchain_anthropic import ChatAnthropic
 from langgraph.checkpoint.mongodb import MongoDBSaver
 from pymongo import MongoClient
+import pytz
 
 from src.deepagents.graph import async_create_deep_agent
 from src.deepagents.state import DeepAgentState
@@ -57,7 +58,10 @@ class ReactAgent:
             db_name=self.db_name,
         )
 
-        self.model = ChatAnthropic(model="claude-sonnet-4-5-20250929")
+        self.model = ChatAnthropic(
+            model="claude-sonnet-4-5-20250929",
+            max_tokens=20000
+        )
 
         set_agent_context("react_agent", f"react_agent_{org_id}")
 
@@ -78,6 +82,12 @@ class ReactAgent:
     def _create_agent(self):
         """Create the deep agent graph with custom tools and subagents."""
         try:
+            # Inject current date into system prompt
+            copenhagen_tz = pytz.timezone('Europe/Copenhagen')
+            current_date = datetime.now(copenhagen_tz).strftime("%A, %B %d, %Y")
+            
+            system_prompt = TENDER_ANALYSIS_SYSTEM_PROMPT.format(current_date=current_date)
+            
             tools = REACT_TOOLS
 
             subagents = [
@@ -122,7 +132,7 @@ class ReactAgent:
             agent_graph = async_create_deep_agent(
                 tools=tools,
                 subagents=subagents,
-                instructions=TENDER_ANALYSIS_SYSTEM_PROMPT,
+                instructions=system_prompt,  # Use formatted prompt with current date
                 model=self.model,
                 checkpointer=self.checkpointer,
                 context_schema=DeepAgentState,
