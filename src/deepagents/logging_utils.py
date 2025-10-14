@@ -493,6 +493,99 @@ def get_unified_logger() -> UnifiedLogger:
     return _unified_logger
 
 
+def extract_human_readable_args(tool_name: str, args: Dict[str, Any]) -> str:
+    """
+    Extract human-readable args display from tool arguments.
+    
+    Returns a concise, user-friendly description of what the tool is doing.
+    
+    Args:
+        tool_name: Name of the tool being called
+        args: Tool arguments dictionary
+        
+    Returns:
+        Human-readable string like "Searching for: GDPR requirements"
+    """
+    try:
+        # Search tools
+        if tool_name == "search_tender_corpus":
+            query = args.get("query", "")
+            if query:
+                return f"Searching for: {query}"
+            return "Searching tender documents"
+        
+        elif tool_name == "web_search":
+            query = args.get("query", "")
+            if query:
+                return f"Web search: {query}"
+            return "Searching the web"
+        
+        # File tools
+        elif tool_name == "read_file":
+            file_path = args.get("file_path", args.get("arg_0", ""))
+            if file_path:
+                # Shorten path if too long
+                if len(file_path) > 50:
+                    file_path = "..." + file_path[-47:]
+                return f"Reading: {file_path}"
+            return "Reading file"
+        
+        elif tool_name == "write_file":
+            file_path = args.get("file_path", args.get("arg_0", ""))
+            if file_path:
+                if len(file_path) > 50:
+                    file_path = "..." + file_path[-47:]
+                return f"Writing: {file_path}"
+            return "Writing file"
+        
+        elif tool_name == "get_file_content":
+            file_id = args.get("file_id", "")
+            if file_id:
+                return f"Retrieving document: {file_id[:20]}..."
+            return "Retrieving document"
+        
+        # Task/sub-agent tool
+        elif tool_name == "task":
+            task_desc = args.get("task_description", args.get("description", ""))
+            if task_desc:
+                # Limit length
+                if len(task_desc) > 80:
+                    task_desc = task_desc[:77] + "..."
+                return f"Sub-agent task: {task_desc}"
+            return "Spawning sub-agent"
+        
+        # Planning tools
+        elif tool_name == "write_todos":
+            todos = args.get("todos", [])
+            count = len(todos) if isinstance(todos, list) else 0
+            return f"Creating {count} todo items"
+        
+        # Human interaction
+        elif tool_name == "request_human_input":
+            question = args.get("question", "")
+            if question:
+                if len(question) > 60:
+                    question = question[:57] + "..."
+                return f"Question: {question}"
+            return "Requesting human input"
+        
+        # Default: show tool name and key params
+        else:
+            # Try to find most relevant param
+            key_params = ["query", "question", "prompt", "file_path", "path", "name"]
+            for param in key_params:
+                if param in args and args[param]:
+                    value = str(args[param])
+                    if len(value) > 60:
+                        value = value[:57] + "..."
+                    return f"{tool_name}: {value}"
+            
+            return tool_name
+    
+    except Exception:
+        return tool_name
+
+
 def log_tool_call(func):
     """
     Unified decorator to log tool function calls with agent context.
@@ -525,6 +618,31 @@ def log_tool_call(func):
 
         try:
             logger.log_tool_call_start(tool_name, tool_call_id, log_args, log_kwargs)
+            
+            # Emit streaming tool_start event
+            try:
+                from api.streaming.emitter import get_current_emitter
+                from api.streaming.sanitizer import sanitize_tool_args
+                import asyncio
+                
+                emitter = get_current_emitter()
+                if emitter:
+                    # Combine args and kwargs for summary
+                    all_args = {**log_args, **log_kwargs}
+                    args_summary = sanitize_tool_args(tool_name, all_args)
+                    
+                    # Extract human-readable display
+                    args_display = extract_human_readable_args(tool_name, kwargs)
+                    
+                    # Schedule emit in current event loop
+                    try:
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(emitter.emit_tool_start(tool_call_id, tool_name, args_summary, args_display))
+                    except RuntimeError:
+                        pass  # No running loop
+            except Exception:
+                pass  # Don't break tool execution if streaming fails
+            
             result = func(*args, **kwargs)
             execution_time = time.time() - start_time
             # Avoid serializing giant state updates on errors; only log type/summary
@@ -539,6 +657,27 @@ def log_tool_call(func):
             except Exception:
                 pass
             logger.log_tool_call_end(tool_name, tool_call_id, safe_result, execution_time)
+            
+            # Emit streaming tool_end event
+            try:
+                from api.streaming.emitter import get_current_emitter
+                from api.streaming.sanitizer import sanitize_tool_result
+                import asyncio
+                
+                emitter = get_current_emitter()
+                if emitter:
+                    result_summary = sanitize_tool_result(tool_name, safe_result)
+                    execution_ms = int(execution_time * 1000)
+                    
+                    # Schedule emit in current event loop
+                    try:
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(emitter.emit_tool_end(tool_call_id, tool_name, "ok", execution_ms, result_summary))
+                    except RuntimeError:
+                        pass  # No running loop
+            except Exception:
+                pass  # Don't break tool execution if streaming fails
+            
             return result
         except Exception as e:
             execution_time = time.time() - start_time
@@ -567,6 +706,25 @@ def log_tool_call(func):
 
         try:
             logger.log_tool_call_start(tool_name, tool_call_id, log_args, log_kwargs)
+            
+            # Emit streaming tool_start event
+            try:
+                from api.streaming.emitter import get_current_emitter
+                from api.streaming.sanitizer import sanitize_tool_args
+                import asyncio
+                
+                emitter = get_current_emitter()
+                if emitter:
+                    all_args = {**log_args, **log_kwargs}
+                    args_summary = sanitize_tool_args(tool_name, all_args)
+                    
+                    # Extract human-readable display
+                    args_display = extract_human_readable_args(tool_name, kwargs)
+                    
+                    await emitter.emit_tool_start(tool_call_id, tool_name, args_summary, args_display)
+            except Exception:
+                pass  # Don't break tool execution if streaming fails
+            
             result = await func(*args, **kwargs)
             execution_time = time.time() - start_time
             safe_result = result
@@ -580,6 +738,20 @@ def log_tool_call(func):
             except Exception:
                 pass
             logger.log_tool_call_end(tool_name, tool_call_id, safe_result, execution_time)
+            
+            # Emit streaming tool_end event
+            try:
+                from api.streaming.emitter import get_current_emitter
+                from api.streaming.sanitizer import sanitize_tool_result
+                
+                emitter = get_current_emitter()
+                if emitter:
+                    result_summary = sanitize_tool_result(tool_name, safe_result)
+                    execution_ms = int(execution_time * 1000)
+                    await emitter.emit_tool_end(tool_call_id, tool_name, "ok", execution_ms, result_summary)
+            except Exception:
+                pass  # Don't break tool execution if streaming fails
+            
             return result
         except Exception as e:
             execution_time = time.time() - start_time

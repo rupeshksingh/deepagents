@@ -266,6 +266,20 @@ def create_task_tool(
             set_agent_context("subagent", f"subagent_{subagent_type}", subagent_type)
 
             log_subagent_call(subagent_type, description)
+            
+            # Emit SUBAGENT_START event for streaming
+            subagent_id = f"subagent_{subagent_type}_{tool_call_id[:8]}"
+            try:
+                from api.streaming.emitter import get_current_emitter
+                emitter = get_current_emitter()
+                if emitter:
+                    await emitter.emit_subagent_start(
+                        agent_id=subagent_id,
+                        parent_call_id=tool_call_id,
+                        subagent_description=description
+                    )
+            except Exception:
+                pass  # Don't break if streaming fails
 
             sub_agent = agents[subagent_type]
             # Create clean state for subagent with ONLY the task description
@@ -292,10 +306,28 @@ def create_task_tool(
             get_unified_logger().logger.warning(
                 f"SUBAGENT_INVOKE_DEBUG: about to invoke {subagent_type}, state_keys={list(subagent_state.keys())}, files_in_state={len(subagent_state.get('files', {}))}"
             )
+            import time
+            subagent_start_time = time.time()
             result = await sub_agent.ainvoke(subagent_state)
+            subagent_execution_ms = int((time.time() - subagent_start_time) * 1000)
+            
             get_unified_logger().logger.warning(
                 f"SUBAGENT_RESULT_DEBUG: {subagent_type} returned, result_keys={list(result.keys()) if isinstance(result, dict) else 'not_dict'}, files_in_result={len(result.get('files', {})) if isinstance(result, dict) else 0}"
             )
+            
+            # Emit SUBAGENT_END event for streaming
+            try:
+                from api.streaming.emitter import get_current_emitter
+                emitter = get_current_emitter()
+                if emitter:
+                    await emitter.emit_subagent_end(
+                        agent_id=subagent_id,
+                        parent_call_id=tool_call_id,
+                        ms=subagent_execution_ms
+                    )
+            except Exception:
+                pass  # Don't break if streaming fails
+            
             state_update = {}
             for k, v in result.items():
                 if k not in ["todos", "messages"]:
@@ -333,6 +365,25 @@ def create_task_tool(
             set_agent_context("subagent", f"subagent_{subagent_type}", subagent_type)
 
             log_subagent_call(subagent_type, description)
+            
+            # Emit SUBAGENT_START event for streaming (sync version - schedule coroutine)
+            subagent_id = f"subagent_{subagent_type}_{tool_call_id[:8]}"
+            try:
+                from api.streaming.emitter import get_current_emitter
+                import asyncio
+                emitter = get_current_emitter()
+                if emitter:
+                    try:
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(emitter.emit_subagent_start(
+                            agent_id=subagent_id,
+                            parent_call_id=tool_call_id,
+                            subagent_description=description
+                        ))
+                    except RuntimeError:
+                        pass  # No running loop
+            except Exception:
+                pass  # Don't break if streaming fails
 
             sub_agent = agents[subagent_type]
             # Create clean state for subagent with ONLY the task description
@@ -356,7 +407,29 @@ def create_task_tool(
                 "cluster_id": state.get("cluster_id") if state else None,
                 # Don't pass todos or other accumulated context
             }
+            import time
+            subagent_start_time = time.time()
             result = sub_agent.invoke(subagent_state)
+            subagent_execution_ms = int((time.time() - subagent_start_time) * 1000)
+            
+            # Emit SUBAGENT_END event for streaming (sync version - schedule coroutine)
+            try:
+                from api.streaming.emitter import get_current_emitter
+                import asyncio
+                emitter = get_current_emitter()
+                if emitter:
+                    try:
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(emitter.emit_subagent_end(
+                            agent_id=subagent_id,
+                            parent_call_id=tool_call_id,
+                            ms=subagent_execution_ms
+                        ))
+                    except RuntimeError:
+                        pass  # No running loop
+            except Exception:
+                pass  # Don't break if streaming fails
+            
             state_update = {}
             for k, v in result.items():
                 if k not in ["todos", "messages"]:

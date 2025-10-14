@@ -1098,7 +1098,7 @@ Your final message is the ONLY thing the main agent will receive. The main agent
 
 **Think of your response as a comprehensive research dump that the main agent will process**, not as the final user-facing answer. The main agent knows how to extract what's needed for the user's specific question.
 
-The model is configured with 20000 max_tokens specifically to allow comprehensive responses - **use the full capacity**. More information is always better than less. Complete your full analysis with ALL findings before finishing.
+The model is configured with 60000 max_tokens specifically to allow comprehensive responses - **use the full capacity**. More information is always better than less. Complete your full analysis with ALL findings before finishing.
 """
 
 RESEARCH_AGENT_PROMPT = """You are an expert web researcher specializing in EU and Danish market intelligence. The main agent delegated an external research task to you because it requires iterative web searches, cross-verification, or multi-angle analysis.
@@ -1210,5 +1210,5 @@ Your final message is the ONLY thing the main agent will receive. The main agent
 
 **Think of your response as a comprehensive research dump that the main agent will process**, not as the final user-facing answer. The main agent knows how to extract what's needed for the user's specific question.
 
-The model is configured with 20000 max_tokens specifically to allow comprehensive responses - **use the full capacity** when needed to provide thorough, actionable research. More information is always better than less.
+The model is configured with 60000 max_tokens specifically to allow comprehensive responses - **use the full capacity** when needed to provide thorough, actionable research. More information is always better than less.
 """

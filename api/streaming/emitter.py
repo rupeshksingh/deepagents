@@ -42,7 +42,14 @@ class StreamingEventEmitter:
     - Event ID generation (snowflake-like)
     """
     
-    def __init__(self, message_id: str, chat_id: str, maxsize: int = 1000):
+    def __init__(
+        self, 
+        message_id: str, 
+        chat_id: str, 
+        maxsize: int = 1000,
+        agent_type: str = "main",
+        agent_id: Optional[str] = None
+    ):
         """
         Initialize emitter.
         
@@ -50,9 +57,13 @@ class StreamingEventEmitter:
             message_id: The message being processed
             chat_id: The chat this message belongs to
             maxsize: Maximum queue size
+            agent_type: Type of agent ("main" or "subagent")
+            agent_id: Unique agent identifier
         """
         self.message_id = message_id
         self.chat_id = chat_id
+        self.agent_type = agent_type
+        self.agent_id = agent_id or f"{agent_type}_{uuid.uuid4().hex[:8]}"
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=maxsize)
         self._active = False
         self._seq = 0
@@ -61,7 +72,10 @@ class StreamingEventEmitter:
         # Event buffer for batch DB writes
         self._event_buffer: list[StreamEvent] = []
         
-        logger.info(f"StreamingEventEmitter created for message {message_id}")
+        # Sub-agent tracking
+        self.parent_call_id: Optional[str] = None  # Set when spawned as subagent
+        
+        logger.info(f"StreamingEventEmitter created for message {message_id} (agent_type={agent_type})")
     
     def start(self) -> None:
         """Start capturing events."""
@@ -173,15 +187,21 @@ class StreamingEventEmitter:
         self,
         call_id: str,
         name: str,
-        args_summary: str
+        args_summary: str,
+        args_display: Optional[str] = None
     ) -> None:
         """Emit TOOL_START event."""
-        from api.streaming.events import create_tool_start_event
-        event = create_tool_start_event(
-            self._generate_event_id(),
-            call_id,
-            name,
-            args_summary
+        from api.streaming.events import StreamEvent, EventType
+        event = StreamEvent(
+            type=EventType.TOOL_START,
+            id=self._generate_event_id(),
+            call_id=call_id,
+            name=name,
+            args_summary=args_summary,
+            args_display=args_display or name,  # Fallback to tool name
+            agent_type=self.agent_type,
+            agent_id=self.agent_id,
+            parent_call_id=self.parent_call_id
         )
         await self.emit(event)
     
@@ -194,14 +214,18 @@ class StreamingEventEmitter:
         result_summary: str
     ) -> None:
         """Emit TOOL_END event."""
-        from api.streaming.events import create_tool_end_event
-        event = create_tool_end_event(
-            self._generate_event_id(),
-            call_id,
-            name,
-            status,
-            ms,
-            result_summary
+        from api.streaming.events import StreamEvent, EventType
+        event = StreamEvent(
+            type=EventType.TOOL_END,
+            id=self._generate_event_id(),
+            call_id=call_id,
+            name=name,
+            status=status,
+            ms=ms,
+            result_summary=result_summary,
+            agent_type=self.agent_type,
+            agent_id=self.agent_id,
+            parent_call_id=self.parent_call_id
         )
         await self.emit(event)
     
@@ -240,5 +264,82 @@ class StreamingEventEmitter:
         """Emit ERROR event."""
         from api.streaming.events import create_error_event
         event = create_error_event(self._generate_event_id(), error)
+        await self.emit(event)
+    
+    async def emit_thinking(
+        self,
+        text: str,
+        agent_type: Optional[str] = None,
+        agent_id: Optional[str] = None
+    ) -> None:
+        """Emit THINKING event (AI message content)."""
+        from api.streaming.events import create_thinking_event
+        event = create_thinking_event(
+            self._generate_event_id(),
+            text,
+            agent_type or self.agent_type,
+            agent_id or self.agent_id,
+            self.parent_call_id
+        )
+        await self.emit(event)
+    
+    async def emit_subagent_start(
+        self,
+        agent_id: str,
+        parent_call_id: str,
+        subagent_description: str
+    ) -> None:
+        """Emit SUBAGENT_START event."""
+        from api.streaming.events import create_subagent_start_event
+        event = create_subagent_start_event(
+            self._generate_event_id(),
+            agent_id,
+            parent_call_id,
+            subagent_description
+        )
+        await self.emit(event)
+    
+    async def emit_subagent_end(
+        self,
+        agent_id: str,
+        parent_call_id: str,
+        ms: Optional[int] = None
+    ) -> None:
+        """Emit SUBAGENT_END event."""
+        from api.streaming.events import create_subagent_end_event
+        event = create_subagent_end_event(
+            self._generate_event_id(),
+            agent_id,
+            parent_call_id,
+            ms
+        )
+        await self.emit(event)
+    
+    async def emit_content_start(
+        self,
+        agent_type: Optional[str] = None,
+        agent_id: Optional[str] = None
+    ) -> None:
+        """Emit CONTENT_START event."""
+        from api.streaming.events import create_content_start_event
+        event = create_content_start_event(
+            self._generate_event_id(),
+            agent_type or self.agent_type,
+            agent_id or self.agent_id
+        )
+        await self.emit(event)
+    
+    async def emit_content_end(
+        self,
+        agent_type: Optional[str] = None,
+        agent_id: Optional[str] = None
+    ) -> None:
+        """Emit CONTENT_END event."""
+        from api.streaming.events import create_content_end_event
+        event = create_content_end_event(
+            self._generate_event_id(),
+            agent_type or self.agent_type,
+            agent_id or self.agent_id
+        )
         await self.emit(event)
 

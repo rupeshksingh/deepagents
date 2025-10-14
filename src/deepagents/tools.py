@@ -84,6 +84,31 @@ def write_todos(
     todos: list[Todo], 
     tool_call_id: Annotated[str, InjectedToolCallId, InjectedToolArg]
 ) -> Command:
+    # Emit plan event for streaming
+    try:
+        from api.streaming.emitter import get_current_emitter
+        import asyncio
+        
+        emitter = get_current_emitter()
+        if emitter:
+            # Convert todos to plan items
+            plan_items = []
+            for todo in todos:
+                plan_items.append({
+                    "id": todo.id,
+                    "text": todo.content,
+                    "status": todo.status
+                })
+            
+            # Schedule emit in current event loop
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(emitter.emit_plan(plan_items))
+            except RuntimeError:
+                pass  # No running loop
+    except Exception:
+        pass  # Don't break tool execution if streaming fails
+    
     return Command(
         update={
             "todos": todos,

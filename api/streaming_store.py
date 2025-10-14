@@ -151,6 +151,9 @@ User Query: {user_content}"""
         last_emit_time = datetime.now(timezone.utc)
         last_heartbeat_check = datetime.now(timezone.utc)
         
+        # Track seen messages to avoid duplicate THINKING events
+        seen_message_ids = set()
+        
         # Process agent stream and emitter concurrently
         try:
             async for chunk in agent_stream:
@@ -163,6 +166,48 @@ User Query: {user_content}"""
                     interrupt_data = interrupt_info[0] if interrupt_info else None
                     logger.info(f"HITL interrupt detected for message {message_id}")
                     break
+                
+                # Capture AI messages as THINKING events
+                if "messages" in chunk and chunk["messages"]:
+                    last_message = chunk["messages"][-1]
+                    
+                    # Check if it's an AIMessage with content
+                    if isinstance(last_message, AIMessage):
+                        msg_id = getattr(last_message, 'id', None)
+                        content = last_message.content
+                        
+                        # Emit THINKING if:
+                        # 1. Has content (string or list with text)
+                        # 2. Haven't seen this message yet
+                        # 3. Not the final response (we'll handle that separately)
+                        if content and msg_id not in seen_message_ids:
+                            # Extract text from content (handle both string and list)
+                            if isinstance(content, list):
+                                text_parts = []
+                                for block in content:
+                                    if isinstance(block, dict):
+                                        if block.get("type") == "text":
+                                            text_parts.append(block.get("text", ""))
+                                    elif hasattr(block, 'text'):
+                                        text_parts.append(block.text)
+                                    else:
+                                        text_parts.append(str(block))
+                                thinking_text = " ".join(text_parts).strip()
+                            else:
+                                thinking_text = str(content).strip()
+                            
+                            # Only emit if there's actual text content
+                            if thinking_text:
+                                # Check if this is just tool calls without reasoning
+                                has_tool_calls = hasattr(last_message, 'tool_calls') and last_message.tool_calls
+                                
+                                # Emit THINKING event for AI reasoning
+                                # Don't emit if it's ONLY tool calls with no text
+                                if not has_tool_calls or thinking_text:
+                                    await emitter.emit_thinking(thinking_text)
+                                    
+                                    if msg_id:
+                                        seen_message_ids.add(msg_id)
                 
                 # Drain emitter between agent chunks
                 while True:
@@ -292,6 +337,10 @@ User Query: {user_content}"""
             if final_response:
                 full_response = final_response
                 
+                # Emit CONTENT_START to signal final response begins
+                await emitter.emit_content_start()
+                yield emitter._event_buffer[-1]
+                
                 # Stream content in chunks (for progressive rendering)
                 words = final_response.split()
                 chunk_size = 10
@@ -300,6 +349,10 @@ User Query: {user_content}"""
                     await emitter.emit_content(chunk_text)
                     yield emitter._event_buffer[-1]
                     await asyncio.sleep(0.02)  # Small delay for smoothness
+                
+                # Emit CONTENT_END to signal final response complete
+                await emitter.emit_content_end()
+                yield emitter._event_buffer[-1]
             
             # Emit END event
             await emitter.emit_end("completed", tool_call_count)

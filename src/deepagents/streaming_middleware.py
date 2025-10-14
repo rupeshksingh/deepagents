@@ -19,6 +19,32 @@ from src.deepagents.logging_utils import get_unified_logger
 logger = logging.getLogger(__name__)
 
 
+def _schedule_emit_sync(coro):
+    """
+    Schedule an emit coroutine to run in the current event loop.
+    
+    This helper ensures that emit events are properly scheduled and queued
+    before the middleware returns control. Called from synchronous middleware
+    methods that run within an async context.
+    
+    Args:
+        coro: The coroutine to schedule (emit operation)
+    """
+    try:
+        loop = asyncio.get_running_loop()
+        # Create task in current loop - ensures it runs on next loop iteration
+        # This is critical: create_task() schedules it in the current loop's queue
+        # so it will execute before streaming_store.py checks the emitter queue
+        task = loop.create_task(coro)
+        # We don't await here (since we're in a sync function), but the task
+        # is now scheduled in the loop and will execute before the next await point
+        return task
+    except RuntimeError:
+        # No running loop - can't emit
+        logger.warning("No running event loop, cannot emit streaming event")
+        return None
+
+
 class StreamingMiddleware(AgentMiddleware):
     """
     Middleware that captures agent events and emits them for streaming.
@@ -49,22 +75,8 @@ class StreamingMiddleware(AgentMiddleware):
         # Record start time
         self._tool_start_times[tool_call_id] = time.time()
         
-        # Get emitter from context
-        try:
-            from api.streaming.emitter import get_current_emitter
-            from api.streaming.sanitizer import sanitize_tool_args
-            
-            emitter = get_current_emitter()
-            if emitter:
-                # Sanitize arguments
-                args_summary = sanitize_tool_args(tool_name, tool_args)
-                
-                # Emit tool_start event
-                asyncio.create_task(
-                    emitter.emit_tool_start(tool_call_id, tool_name, args_summary)
-                )
-        except Exception as e:
-            logger.warning(f"Failed to emit tool_start event: {e}")
+        # NOTE: modify_tool_call is not actually called by LangChain's AgentMiddleware
+        # Tool events are now emitted via the @log_tool_call decorator in logging_utils.py
         
         return tool_call
     
@@ -87,27 +99,8 @@ class StreamingMiddleware(AgentMiddleware):
         start_time = self._tool_start_times.pop(tool_call_id, time.time())
         execution_ms = int((time.time() - start_time) * 1000)
         
-        # Determine status
-        status = "ok"
-        if isinstance(tool_result, str) and tool_result.startswith("Error:"):
-            status = "error"
-        
-        # Get emitter from context
-        try:
-            from api.streaming.emitter import get_current_emitter
-            from api.streaming.sanitizer import sanitize_tool_result
-            
-            emitter = get_current_emitter()
-            if emitter:
-                # Sanitize result
-                result_summary = sanitize_tool_result(tool_name, tool_result)
-                
-                # Emit tool_end event
-                asyncio.create_task(
-                    emitter.emit_tool_end(tool_call_id, tool_name, status, execution_ms, result_summary)
-                )
-        except Exception as e:
-            logger.warning(f"Failed to emit tool_end event: {e}")
+        # NOTE: modify_tool_result is not actually called by LangChain's AgentMiddleware
+        # Tool events are now emitted via the @log_tool_call decorator in logging_utils.py
         
         return tool_result
 
@@ -157,8 +150,8 @@ class PlanningStreamingMiddleware(AgentMiddleware):
                                 "status": todo.get("status", "pending")
                             })
                         
-                        # Emit plan event
-                        asyncio.create_task(
+                        # Emit plan event using helper to ensure proper scheduling
+                        _schedule_emit_sync(
                             emitter.emit_plan(plan_items)
                         )
             except Exception as e:

@@ -60,7 +60,7 @@ class ReactAgent:
 
         self.model = ChatAnthropic(
             model="claude-sonnet-4-5-20250929",
-            max_tokens=20000
+            max_tokens=60000
         )
 
         set_agent_context("react_agent", f"react_agent_{org_id}")
