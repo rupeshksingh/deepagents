@@ -6,8 +6,11 @@ Handles batch writes to separate message_events collection.
 
 import logging
 from datetime import datetime, timezone
+import os
+import time
+from uuid import uuid4
 from typing import List, Optional
-from pymongo import MongoClient, ASCENDING
+from pymongo import MongoClient, ASCENDING, ReturnDocument
 from pymongo.collection import Collection
 
 from api.streaming.events import StreamEvent
@@ -33,6 +36,8 @@ class EventPersistence:
         """
         self.db = mongo_client[db_name]
         self.events_collection: Collection = self.db["message_events"]
+        # Per-message atomic counters for sequencing
+        self.counters_collection: Collection = self.db["message_counters"]
         
         # Create indexes for efficient querying
         self._ensure_indexes()
@@ -56,12 +61,27 @@ class EventPersistence:
             )
             
             # Optional: TTL index for automatic cleanup (14 days)
-            # Uncomment if you want automatic event expiration
-            # self.events_collection.create_index(
-            #     "ts",
-            #     name="event_ttl",
-            #     expireAfterSeconds=14 * 24 * 60 * 60  # 14 days
-            # )
+            # Enable via env var MESSAGE_EVENTS_TTL_DAYS or MESSAGE_EVENTS_TTL_SECONDS
+            ttl_seconds = None
+            try:
+                if os.getenv("MESSAGE_EVENTS_TTL_SECONDS"):
+                    ttl_seconds = int(os.getenv("MESSAGE_EVENTS_TTL_SECONDS", "0"))
+                elif os.getenv("MESSAGE_EVENTS_TTL_DAYS"):
+                    days = int(os.getenv("MESSAGE_EVENTS_TTL_DAYS", "0"))
+                    ttl_seconds = days * 24 * 60 * 60
+            except Exception:
+                ttl_seconds = None
+
+            if ttl_seconds and ttl_seconds > 0:
+                try:
+                    self.events_collection.create_index(
+                        "ts",
+                        name="event_ttl",
+                        expireAfterSeconds=ttl_seconds
+                    )
+                    logger.info(f"TTL index enabled on message_events: {ttl_seconds}s")
+                except Exception as e:
+                    logger.warning(f"Failed to create TTL index: {e}")
             
             logger.info("Message events indexes created successfully")
         except Exception as e:
@@ -71,41 +91,82 @@ class EventPersistence:
         self,
         message_id: str,
         chat_id: str,
-        event: StreamEvent
+        event: StreamEvent,
+        max_retries: int = 3
     ) -> bool:
         """
         Append a single event to MongoDB (for real-time persistence).
+        
+        Includes retry logic with exponential backoff for transient failures.
         
         Args:
             message_id: The message this event belongs to
             chat_id: The chat this message belongs to
             event: Event to append
+            max_retries: Maximum number of retry attempts
             
         Returns:
             True if successful, False otherwise
         """
-        try:
-            # Get current sequence number
-            seq = self.get_event_count(message_id)
-            
-            doc = event.model_dump(exclude_none=True)
-            doc["message_id"] = message_id
-            doc["chat_id"] = chat_id
-            doc["seq"] = seq
-            
-            # Convert ts string to datetime for better querying
-            if "ts" in doc:
-                try:
-                    doc["ts"] = datetime.fromisoformat(doc["ts"].replace('Z', '+00:00'))
-                except Exception:
-                    doc["ts"] = datetime.now(timezone.utc)
-            
-            self.events_collection.insert_one(doc)
-            return True
-            
-        except Exception as e:
-            logger.warning(f"Failed to append event for message {message_id}: {e}")
-            return False
+        last_exception = None
+        
+        for attempt in range(max_retries):
+            try:
+                # Allocate next sequence number atomically per message
+                counter_doc = self.db["message_counters"].find_one_and_update(
+                    {"_id": message_id},
+                    {"$inc": {"next_seq": 1}},
+                    upsert=True,
+                    return_document=ReturnDocument.AFTER,
+                )
+                seq = int(counter_doc.get("next_seq", 1)) - 1
+
+                doc = event.model_dump(exclude_none=True)
+                doc["message_id"] = message_id
+                doc["chat_id"] = chat_id
+                doc["seq"] = seq
+                # Normalize event ID to support precise resume: {timestamp_ms}_{seq}_{rand}
+                now_ms = int(time.time() * 1000)
+                doc["id"] = f"{now_ms}_{seq:04d}_{uuid4().hex[:8]}"
+                
+                # Convert ts string to datetime for better querying
+                if "ts" in doc:
+                    try:
+                        doc["ts"] = datetime.fromisoformat(doc["ts"].replace('Z', '+00:00'))
+                    except Exception:
+                        doc["ts"] = datetime.now(timezone.utc)
+                
+                self.events_collection.insert_one(doc)
+                
+                # Log retry success if this wasn't the first attempt
+                if attempt > 0:
+                    logger.info(
+                        f"Successfully persisted event for message {message_id} "
+                        f"after {attempt + 1} attempts"
+                    )
+                
+                return True
+                
+            except Exception as e:
+                last_exception = e
+                
+                if attempt < max_retries - 1:
+                    # Exponential backoff: 0.1s, 0.2s, 0.4s
+                    sleep_time = 0.1 * (2 ** attempt)
+                    logger.warning(
+                        f"Failed to append event for message {message_id} "
+                        f"(attempt {attempt + 1}/{max_retries}): {e}. "
+                        f"Retrying in {sleep_time}s..."
+                    )
+                    time.sleep(sleep_time)
+                else:
+                    # Final attempt failed
+                    logger.error(
+                        f"Failed to append event for message {message_id} "
+                        f"after {max_retries} attempts: {last_exception}"
+                    )
+        
+        return False
     
     def batch_write_events(
         self,
@@ -129,11 +190,23 @@ class EventPersistence:
         
         try:
             documents = []
-            for seq, event in enumerate(events):
+            for event in events:
+                # Allocate next sequence number atomically
+                counter_doc = self.db["message_counters"].find_one_and_update(
+                    {"_id": message_id},
+                    {"$inc": {"next_seq": 1}},
+                    upsert=True,
+                    return_document=ReturnDocument.AFTER,
+                )
+                seq = int(counter_doc.get("next_seq", 1)) - 1
+
                 doc = event.model_dump(exclude_none=True)
                 doc["message_id"] = message_id
                 doc["chat_id"] = chat_id
                 doc["seq"] = seq
+                # Normalize id
+                now_ms = int(time.time() * 1000)
+                doc["id"] = f"{now_ms}_{seq:04d}_{uuid4().hex[:8]}"
                 # Convert ts string to datetime for better querying
                 if "ts" in doc:
                     try:
@@ -141,7 +214,10 @@ class EventPersistence:
                     except Exception:
                         doc["ts"] = datetime.now(timezone.utc)
                 documents.append(doc)
-            
+
+            if not documents:
+                return True
+
             result = self.events_collection.insert_many(documents, ordered=False)
             
             logger.info(

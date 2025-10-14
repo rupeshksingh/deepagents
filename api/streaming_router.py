@@ -27,6 +27,7 @@ from api.models import (
 from api.store import ApiStore
 from api.utils import validate_uuid, validate_object_id
 from api.streaming.persistence import EventPersistence
+from api.background_agent_registry import get_agent_registry
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +148,16 @@ class StreamingApiRouter:
             status_code=status.HTTP_202_ACCEPTED,
             summary="Resume interrupted message (HITL)",
             description="Resume an interrupted message with human input (accept/edit/respond/ignore)."
+        )
+        
+        # Monitoring endpoints
+        self.router.add_api_route(
+            "/agents/active",
+            self.get_active_agents,
+            methods=["GET"],
+            status_code=status.HTTP_200_OK,
+            summary="Get active agents",
+            description="Get list of currently running agents."
         )
     
     # ========================================================================
@@ -392,6 +403,35 @@ class StreamingApiRouter:
                 f"user={user_message.message_id}, assistant={assistant_message.message_id}"
             )
             
+            # START AGENT IMMEDIATELY AS BACKGROUND TASK
+            # This enables multiple agents running simultaneously
+            # Streams will watch the agent, not start it
+            from api.streaming_store import run_agent_background
+            
+            registry = get_agent_registry()
+            
+            # Create agent coroutine
+            agent_coro = run_agent_background(
+                store=self.store,
+                event_persistence=self.event_persistence,
+                chat_id=chat_id,
+                message_id=assistant_message.message_id,
+                user_content=request.content,
+                metadata=request.metadata or {}
+            )
+            
+            # Start as background task
+            await registry.start_agent(
+                message_id=assistant_message.message_id,
+                chat_id=chat_id,
+                agent_coro=agent_coro
+            )
+            
+            logger.info(
+                f"Started background agent for message {assistant_message.message_id}. "
+                f"Stream will watch it at {stream_url}"
+            )
+            
             return MessageCreateResponse(
                 message_id=assistant_message.message_id,
                 stream_url=stream_url
@@ -461,75 +501,89 @@ class StreamingApiRouter:
                     detail="Message does not belong to specified chat"
                 )
             
-            # Get the user message (previous message in chat)
-            # We need its content to pass to the agent
-            messages = self.store.list_chat_messages(chat_id, page=1, page_size=100)
-            user_content = None
-            # Sort messages chronologically (oldest first) to find the latest user message before assistant
-            for msg in sorted(messages.items, key=lambda m: m.created_at, reverse=False):
-                if msg.role.value == "user" and msg.created_at <= message.created_at:
-                    user_content = msg.content
+            # NOTE: Agent already started on POST. Stream endpoint only watches persisted events.
+            # No need to fetch prior user_content for execution here.
             
-            if not user_content:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Could not find user message for this response"
-                )
-            
-            # Stream agent response
+            # WATCH agent execution (agent already running in background)
             async def generate_sse():
-                """Generate SSE stream with proper formatting."""
+                """
+                Generate SSE stream by watching agent execution.
+                
+                This watcher is completely independent from agent execution.
+                Client disconnect does NOT affect the agent.
+                """
+                import uuid
+                watcher_id = str(uuid.uuid4())
+                registry = get_agent_registry()
+                
                 try:
-                    # Check for resume from Last-Event-ID header or since query param
+                    # Register as watcher
+                    await registry.register_watcher(message_id, watcher_id)
+                    
+                    # Get since_id from Last-Event-ID header or query param
                     last_event_id = request.headers.get("last-event-id") or since
                     
-                    # Replay historical events first if resuming
-                    if last_event_id:
-                        logger.info(f"Resuming stream from event {last_event_id}")
-                        past_events = self.event_persistence.get_events(
-                            message_id=message_id,
-                            since_id=last_event_id,
-                            limit=1000
-                        )
-                        for e in past_events:
-                            # Format historical event as SSE
-                            yield f"retry: 3000\n"
-                            yield f"event: {e.get('type', 'status')}\n"
-                            yield f"id: {e.get('id', '')}\n"
-                            yield f"data: {json.dumps(e, default=str)}\n\n"
+                    logger.info(
+                        f"Watcher {watcher_id} watching message {message_id}, "
+                        f"since_id={last_event_id}"
+                    )
                     
                     # Import here to avoid circular dependency
-                    from api.streaming_store import stream_agent_response
+                    from api.streaming_store import watch_agent_stream
                     
-                    async for event in stream_agent_response(
-                        store=self.store,
+                    # Watch agent by polling persistence
+                    async for event in watch_agent_stream(
                         event_persistence=self.event_persistence,
                         chat_id=chat_id,
                         message_id=message_id,
-                        user_content=user_content,
-                        metadata=message.metadata or {}
+                        since_id=last_event_id
                     ):
-                        # Format as SSE with proper event type value
-                        # event: {type}
-                        # id: {id}
-                        # data: {json}
-                        yield f"retry: 3000\n"
-                        yield f"event: {event.type.value if hasattr(event.type, 'value') else event.type}\n"
-                        yield f"id: {event.id}\n"
-                        yield f"data: {event.model_dump_json(exclude_none=True)}\n\n"
+                        try:
+                            # Format as SSE with proper event type value
+                            yield f"retry: 3000\n"
+                            yield f"event: {event.type.value if hasattr(event.type, 'value') else event.type}\n"
+                            yield f"id: {event.id}\n"
+                            yield f"data: {event.model_dump_json(exclude_none=True)}\n\n"
+                        except (asyncio.CancelledError, GeneratorExit):
+                            # Client disconnected mid-yield
+                            logger.info(f"Watcher {watcher_id} disconnected during yield")
+                            return  # Exit cleanly without error
+                    
+                    logger.info(f"Watcher {watcher_id} completed for message {message_id}")
+                    
+                except (asyncio.CancelledError, GeneratorExit):
+                    # Client disconnected - agent keeps running
+                    # This is EXPECTED behavior, not an error
+                    logger.info(f"Watcher {watcher_id} disconnected (client left)")
+                    return  # Exit cleanly
                     
                 except Exception as e:
-                    logger.error(f"Streaming error for message {message_id}: {e}")
-                    # Send error event
-                    from api.streaming.events import create_error_event
-                    error_event = create_error_event(
-                        f"error_{message_id}",
-                        f"Streaming error: {str(e)}"
-                    )
-                    yield f"retry: 3000\n"
-                    yield f"event: error\n"
-                    yield f"id: {error_event.id}\n"
-                    yield f"data: {error_event.model_dump_json()}\n\n"
+                    # Real error in watcher - log and send error event
+                    logger.error(f"Watcher {watcher_id} error: {e}", exc_info=True)
+                    
+                    # Try to send error event to client (may fail if disconnected)
+                    try:
+                        from api.streaming.events import create_error_event
+                        error_event = create_error_event(
+                            f"error_{message_id}_{watcher_id}",
+                            f"Streaming error: {str(e)}"
+                        )
+                        yield f"retry: 3000\n"
+                        yield f"event: error\n"
+                        yield f"id: {error_event.id}\n"
+                        yield f"data: {error_event.model_dump_json()}\n\n"
+                    except Exception:
+                        # Client already gone, can't send error
+                        pass
+                
+                finally:
+                    # ALWAYS unregister watcher, even on exception
+                    # Don't let unregister errors crash the generator
+                    try:
+                        await registry.unregister_watcher(message_id, watcher_id)
+                        logger.debug(f"Watcher {watcher_id} unregistered")
+                    except Exception as unreg_err:
+                        logger.error(f"Failed to unregister watcher {watcher_id}: {unreg_err}")
             
             return StreamingResponse(
                 generate_sse(),
@@ -654,7 +708,7 @@ class StreamingApiRouter:
                 )
             
             # Check if message is interrupted
-            metadata = message.get("metadata", {})
+            metadata = message.metadata or {}
             if not metadata.get("interrupted"):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -743,6 +797,47 @@ class StreamingApiRouter:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to resume message: {str(e)}"
+            )
+
+
+    # ========================================================================
+    # Monitoring Endpoints
+    # ========================================================================
+    
+    async def get_active_agents(self) -> dict:
+        """
+        Get list of currently running agents.
+        
+        Returns:
+            dict with active agent count and details
+        """
+        try:
+            registry = get_agent_registry()
+            
+            # Get all running agents
+            running_tasks = await registry.list_running()
+            
+            # Build response
+            agents = []
+            for task in running_tasks:
+                agents.append({
+                    "message_id": task.message_id,
+                    "chat_id": task.chat_id,
+                    "started_at": task.started_at.isoformat(),
+                    "watchers": len(task.watchers),
+                    "error": task.error
+                })
+            
+            return {
+                "count": len(agents),
+                "agents": agents
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to get active agents: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to get active agents: {str(e)}"
             )
 
 
