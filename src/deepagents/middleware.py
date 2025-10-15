@@ -1,34 +1,54 @@
 """DeepAgents implemented as Middleware"""
+
 import json
 from datetime import datetime
 from langchain.agents import create_agent
-from langchain.agents.middleware import AgentMiddleware, AgentState, ModelRequest, SummarizationMiddleware
+from langchain.agents.middleware import (
+    AgentMiddleware,
+    AgentState,
+    ModelRequest,
+    SummarizationMiddleware,
+)
 from langchain.agents.middleware.prompt_caching import AnthropicPromptCachingMiddleware
-from langchain_core.tools import BaseTool, tool, InjectedToolCallId
+from langchain_core.tools import BaseTool, tool, InjectedToolCallId, InjectedToolArg
 from langchain_core.messages import ToolMessage
+from langchain.tools.tool_node import InjectedState
 from langchain.chat_models import init_chat_model
 from langgraph.types import Command
+from langgraph.runtime import Runtime
 from typing import Annotated
 from src.deepagents.state import PlanningState, FilesystemState
 from src.deepagents.tools import write_todos, ls, read_file, write_file, edit_file
-from src.deepagents.prompts import WRITE_TODOS_SYSTEM_PROMPT, TASK_SYSTEM_PROMPT, FILESYSTEM_SYSTEM_PROMPT, TASK_TOOL_DESCRIPTION, BASE_AGENT_PROMPT
+from src.deepagents.prompts import (
+    WRITE_TODOS_SYSTEM_PROMPT,
+    TASK_SYSTEM_PROMPT,
+    FILESYSTEM_SYSTEM_PROMPT,
+    TASK_TOOL_DESCRIPTION,
+    BASE_AGENT_PROMPT,
+)
 from src.deepagents.types import SubAgent, CustomSubAgent
-from src.deepagents.logging_utils import log_tool_call, log_subagent_call, set_agent_context, get_unified_logger
+from src.deepagents.logging_utils import (
+    log_tool_call,
+    log_subagent_call,
+    set_agent_context,
+    get_unified_logger,
+)
 
 ###########################
 # Tool Call Logging Middleware
 ###########################
 
+
 class ToolCallLoggingMiddleware(AgentMiddleware):
     """Simplified middleware to log all tool calls at the agent level with context."""
-    
+
     def __init__(self, agent_type: str = "main_agent", agent_id: str = None):
         """Initialize with agent context."""
         self.agent_type = agent_type
         self.agent_id = agent_id or f"agent_{id(self)}"
         self.logger = get_unified_logger()
         set_agent_context(self.agent_type, self.agent_id)
-    
+
     def modify_tool_call(self, tool_call, agent_state):
         """Log tool calls before they are executed with unified context."""
         tool_name = tool_call.get("name", "unknown")
@@ -43,40 +63,71 @@ class ToolCallLoggingMiddleware(AgentMiddleware):
             "agent_context": {
                 "agent_type": self.agent_type,
                 "agent_id": self.agent_id,
-                "middleware": "ToolCallLoggingMiddleware"
-            }
+                "middleware": "ToolCallLoggingMiddleware",
+            },
         }
         self.logger.logger.info(f"AGENT_TOOL_CALL: {json.dumps(log_data, default=str)}")
-        
+
         return tool_call
+
 
 ###########################
 # Planning Middleware
 ###########################
 
+
 class PlanningMiddleware(AgentMiddleware):
     state_schema = PlanningState
     tools = [write_todos]
 
-    def modify_model_request(self, request: ModelRequest, agent_state: PlanningState) -> ModelRequest:
-        request.system_prompt = request.system_prompt + "\n\n" + WRITE_TODOS_SYSTEM_PROMPT
+    def modify_model_request(
+        self, request: ModelRequest, agent_state: PlanningState, runtime: Runtime
+    ) -> ModelRequest:
+        request.system_prompt = (
+            request.system_prompt + "\n\n" + WRITE_TODOS_SYSTEM_PROMPT
+        )
         return request
+
 
 ###########################
 # Filesystem Middleware
 ###########################
 
+
 class FilesystemMiddleware(AgentMiddleware):
     state_schema = FilesystemState
     tools = [ls, read_file, write_file, edit_file]
 
-    def modify_model_request(self, request: ModelRequest, agent_state: FilesystemState) -> ModelRequest:
-        request.system_prompt = request.system_prompt + "\n\n" + FILESYSTEM_SYSTEM_PROMPT
+    def modify_model_request(
+        self, request: ModelRequest, agent_state: FilesystemState, runtime: Runtime
+    ) -> ModelRequest:
+        request.system_prompt = (
+            request.system_prompt + "\n\n" + FILESYSTEM_SYSTEM_PROMPT
+        )
         return request
+    
+    def modify_tool_call(self, tool_call, agent_state):
+        """Inject agent_state files into tool args for cross-graph compatibility."""
+        import logging
+        logger = logging.getLogger(__name__)
+        tool_name = tool_call.get("name", "")
+        # For filesystem tools, inject state from agent_state since InjectedState
+        # doesn't work across graph boundaries (parent → subagent)
+        if tool_name in ["ls", "read_file", "write_file", "edit_file"]:
+            args = tool_call.get("args", {})
+            files_dict = agent_state.get("files", {})
+            logger.warning(f"FILESYSTEM_MIDDLEWARE: tool={tool_name}, agent_state_keys={list(agent_state.keys()) if isinstance(agent_state, dict) else 'not_dict'}, files_count={len(files_dict)}, files_keys={list(files_dict.keys())[:3]}")
+            # Inject minimal state with only 'files' to avoid bloating tool call traces
+            # (Tools only need the files dict, not entire agent state)
+            args["state"] = {"files": files_dict}
+            tool_call["args"] = args
+        return tool_call
+
 
 ###########################
 # SubAgent Middleware
 ###########################
+
 
 class SubAgentMiddleware(AgentMiddleware):
     def __init__(
@@ -95,33 +146,39 @@ class SubAgentMiddleware(AgentMiddleware):
         )
         self.tools = [task_tool]
 
-    def modify_model_request(self, request: ModelRequest, agent_state: AgentState) -> ModelRequest:
+    def modify_model_request(
+        self, request: ModelRequest, agent_state: AgentState, runtime: Runtime
+    ) -> ModelRequest:
         request.system_prompt = request.system_prompt + "\n\n" + TASK_SYSTEM_PROMPT
         return request
+
 
 def _get_agents(
     default_subagent_tools: list[BaseTool],
     subagents: list[SubAgent | CustomSubAgent],
-    model
+    model,
 ):
+    from src.deepagents.state import DeepAgentState
+    
     default_subagent_middleware = [
         PlanningMiddleware(),
         FilesystemMiddleware(),
         # TODO: Add this back when fixed
         SummarizationMiddleware(
             model=model,
-            max_tokens_before_summary=120000,
-            messages_to_keep=20,
+            max_tokens_before_summary=60000,
+            messages_to_keep=12,
         ),
         AnthropicPromptCachingMiddleware(ttl="5m", unsupported_model_behavior="ignore"),
     ]
     agents = {
         "general-purpose": create_agent(
             model,
-            prompt=BASE_AGENT_PROMPT,
+            system_prompt=BASE_AGENT_PROMPT,
             tools=default_subagent_tools,
             checkpointer=False,
-            middleware=default_subagent_middleware
+            middleware=default_subagent_middleware,
+            context_schema=DeepAgentState,  # Ensure 'files' is preserved in state
         )
     }
     for _agent in subagents:
@@ -146,10 +203,11 @@ def _get_agents(
             _middleware = default_subagent_middleware
         agents[_agent["name"]] = create_agent(
             sub_model,
-            prompt=_agent["prompt"],
+            system_prompt=_agent["prompt"],
             tools=_tools,
             middleware=_middleware,
             checkpointer=False,
+            context_schema=DeepAgentState,  # Preserve 'files' & compatible structure
         )
     return agents
 
@@ -164,12 +222,30 @@ def create_task_tool(
     model,
     is_async: bool = False,
 ):
-    agents = _get_agents(
-        default_subagent_tools, subagents, model
-    )
+    agents = _get_agents(default_subagent_tools, subagents, model)
     other_agents_string = _get_subagent_description(subagents)
+    
+    def _fix_task_tool_schema(tool_obj):
+        """Remove injected params from tool schema to prevent validation errors."""
+        if hasattr(tool_obj, 'args_schema') and tool_obj.args_schema is not None:
+            schema = tool_obj.args_schema
+            if hasattr(schema, 'model_fields'):
+                if 'state' in schema.model_fields:
+                    field = schema.model_fields['state']
+                    field.default = None
+                    field.default_factory = None
+                    if hasattr(schema, '__pydantic_required__'):
+                        schema.__pydantic_required__.discard('state')
+                if 'tool_call_id' in schema.model_fields:
+                    field = schema.model_fields['tool_call_id']
+                    field.default = None
+                    field.default_factory = None
+                    if hasattr(schema, '__pydantic_required__'):
+                        schema.__pydantic_required__.discard('tool_call_id')
+        return tool_obj
 
     if is_async:
+
         @tool(
             description=TASK_TOOL_DESCRIPTION.format(other_agents=other_agents_string)
         )
@@ -177,9 +253,13 @@ def create_task_tool(
         async def task(
             description: str,
             subagent_type: str,
-            state: dict,
-            tool_call_id: Annotated[str, InjectedToolCallId],
+            state: Annotated[FilesystemState, InjectedState, InjectedToolArg] = None,
+            tool_call_id: Annotated[str, InjectedToolCallId, InjectedToolArg] = "",
         ):
+            # Validate required parameters
+            if not description or not description.strip():
+                return f"❌ Error: 'description' parameter is required and cannot be empty. The task tool requires BOTH 'subagent_type' AND 'description'. This error usually means the model hit max_tokens while generating tool calls. Please retry with a briefer explanation before the tool calls."
+            
             if subagent_type not in agents:
                 return f"Error: invoked agent of type {subagent_type}, the only allowed types are {[f'`{k}`' for k in agents]}"
 
@@ -187,9 +267,67 @@ def create_task_tool(
 
             log_subagent_call(subagent_type, description)
             
+            # Emit SUBAGENT_START event for streaming
+            subagent_id = f"subagent_{subagent_type}_{tool_call_id[:8]}"
+            try:
+                from api.streaming.emitter import get_current_emitter
+                emitter = get_current_emitter()
+                if emitter:
+                    await emitter.emit_subagent_start(
+                        agent_id=subagent_id,
+                        parent_call_id=tool_call_id,
+                        subagent_description=description
+                    )
+            except Exception:
+                pass  # Don't break if streaming fails
+
             sub_agent = agents[subagent_type]
-            state["messages"] = [{"role": "user", "content": description}]
-            result = await sub_agent.ainvoke(state)
+            # Create clean state for subagent with ONLY the task description
+            # Filter to only pass the three critical context files to subagents
+            files_dict = state.get("files", {}) if state else {}
+            context_files = {
+                k: v for k, v in files_dict.items()
+                if k in [
+                    "/workspace/context/tender_summary.md",
+                    "/workspace/context/file_index.json",
+                    "/workspace/context/cluster_id.txt",
+                ]
+            }
+            get_unified_logger().logger.info(
+                f"TASK_PASS_FILES: subagent={subagent_type} total_files={len(files_dict)} context_files={len(context_files)} keys={list(context_files.keys())}"
+            )
+            subagent_state = {
+                "messages": [{"role": "user", "content": description}],
+                "files": context_files,  # Only pass context files
+                # Get cluster_id from top-level state, not file content
+                "cluster_id": state.get("cluster_id") if state else None,
+                # Don't pass todos or other accumulated context
+            }
+            get_unified_logger().logger.warning(
+                f"SUBAGENT_INVOKE_DEBUG: about to invoke {subagent_type}, state_keys={list(subagent_state.keys())}, files_in_state={len(subagent_state.get('files', {}))}"
+            )
+            import time
+            subagent_start_time = time.time()
+            result = await sub_agent.ainvoke(subagent_state)
+            subagent_execution_ms = int((time.time() - subagent_start_time) * 1000)
+            
+            get_unified_logger().logger.warning(
+                f"SUBAGENT_RESULT_DEBUG: {subagent_type} returned, result_keys={list(result.keys()) if isinstance(result, dict) else 'not_dict'}, files_in_result={len(result.get('files', {})) if isinstance(result, dict) else 0}"
+            )
+            
+            # Emit SUBAGENT_END event for streaming
+            try:
+                from api.streaming.emitter import get_current_emitter
+                emitter = get_current_emitter()
+                if emitter:
+                    await emitter.emit_subagent_end(
+                        agent_id=subagent_id,
+                        parent_call_id=tool_call_id,
+                        ms=subagent_execution_ms
+                    )
+            except Exception:
+                pass  # Don't break if streaming fails
+            
             state_update = {}
             for k, v in result.items():
                 if k not in ["todos", "messages"]:
@@ -204,7 +342,9 @@ def create_task_tool(
                     ],
                 }
             )
-    else: 
+
+    else:
+
         @tool(
             description=TASK_TOOL_DESCRIPTION.format(other_agents=other_agents_string)
         )
@@ -212,9 +352,13 @@ def create_task_tool(
         def task(
             description: str,
             subagent_type: str,
-            state: dict,
-            tool_call_id: Annotated[str, InjectedToolCallId],
+            state: Annotated[FilesystemState, InjectedState, InjectedToolArg] = None,
+            tool_call_id: Annotated[str, InjectedToolCallId, InjectedToolArg] = "",
         ):
+            # Validate required parameters
+            if not description or not description.strip():
+                return f"❌ Error: 'description' parameter is required and cannot be empty. The task tool requires BOTH 'subagent_type' AND 'description'. This error usually means the model hit max_tokens while generating tool calls. Please retry with a briefer explanation before the tool calls."
+            
             if subagent_type not in agents:
                 return f"Error: invoked agent of type {subagent_type}, the only allowed types are {[f'`{k}`' for k in agents]}"
 
@@ -222,9 +366,70 @@ def create_task_tool(
 
             log_subagent_call(subagent_type, description)
             
+            # Emit SUBAGENT_START event for streaming (sync version - schedule coroutine)
+            subagent_id = f"subagent_{subagent_type}_{tool_call_id[:8]}"
+            try:
+                from api.streaming.emitter import get_current_emitter
+                import asyncio
+                emitter = get_current_emitter()
+                if emitter:
+                    try:
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(emitter.emit_subagent_start(
+                            agent_id=subagent_id,
+                            parent_call_id=tool_call_id,
+                            subagent_description=description
+                        ))
+                    except RuntimeError:
+                        pass  # No running loop
+            except Exception:
+                pass  # Don't break if streaming fails
+
             sub_agent = agents[subagent_type]
-            state["messages"] = [{"role": "user", "content": description}]
-            result = sub_agent.invoke(state)
+            # Create clean state for subagent with ONLY the task description
+            # Filter to only pass the three critical context files to subagents
+            files_dict = state.get("files", {}) if state else {}
+            context_files = {
+                k: v for k, v in files_dict.items()
+                if k in [
+                    "/workspace/context/tender_summary.md",
+                    "/workspace/context/file_index.json",
+                    "/workspace/context/cluster_id.txt",
+                ]
+            }
+            get_unified_logger().logger.info(
+                f"TASK_PASS_FILES: subagent={subagent_type} total_files={len(files_dict)} context_files={len(context_files)} keys={list(context_files.keys())}"
+            )
+            subagent_state = {
+                "messages": [{"role": "user", "content": description}],
+                "files": context_files,  # Only pass context files
+                # Get cluster_id from top-level state, not file content
+                "cluster_id": state.get("cluster_id") if state else None,
+                # Don't pass todos or other accumulated context
+            }
+            import time
+            subagent_start_time = time.time()
+            result = sub_agent.invoke(subagent_state)
+            subagent_execution_ms = int((time.time() - subagent_start_time) * 1000)
+            
+            # Emit SUBAGENT_END event for streaming (sync version - schedule coroutine)
+            try:
+                from api.streaming.emitter import get_current_emitter
+                import asyncio
+                emitter = get_current_emitter()
+                if emitter:
+                    try:
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(emitter.emit_subagent_end(
+                            agent_id=subagent_id,
+                            parent_call_id=tool_call_id,
+                            ms=subagent_execution_ms
+                        ))
+                    except RuntimeError:
+                        pass  # No running loop
+            except Exception:
+                pass  # Don't break if streaming fails
+            
             state_update = {}
             for k, v in result.items():
                 if k not in ["todos", "messages"]:
@@ -239,4 +444,7 @@ def create_task_tool(
                     ],
                 }
             )
-    return task
+
+    # Fix the tool schema to remove injected parameters
+    from src.deepagents.tools import _fix_injected_params_schema as _fix_schema
+    return _fix_schema(task)
