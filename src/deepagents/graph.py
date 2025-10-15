@@ -38,23 +38,22 @@ def agent_builder(
     deepagent_middleware = [
         ToolCallLoggingMiddleware(
             agent_type="main_agent", agent_id=f"main_{id(model)}"
-        ),  # Enhanced logging middleware
+        ),
         PlanningMiddleware(),
         FilesystemMiddleware(),
-        SubAgentMiddleware(
-            default_subagent_tools=tools,  # NOTE: These tools are piped to the general-purpose subagent.
+            SubAgentMiddleware(
+            default_subagent_tools=tools,
             subagents=subagents if subagents is not None else [],
             model=model,
             is_async=is_async,
         ),
         SummarizationMiddleware(
             model=model,
-            max_tokens_before_summary=60000,
-            messages_to_keep=12,
+            max_tokens_before_summary=160000,
+            messages_to_keep=30,
         ),
         AnthropicPromptCachingMiddleware(ttl="5m", unsupported_model_behavior="ignore"),
     ]
-    # Add tool interrupt config if provided
     if tool_configs is not None:
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=tool_configs))
 

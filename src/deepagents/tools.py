@@ -1,9 +1,10 @@
+import os
+
 from langchain_core.tools import tool, InjectedToolCallId, InjectedToolArg
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 from typing import Annotated, Union, Optional
 from langchain.tools.tool_node import InjectedState
-from pydantic import create_model
 from src.deepagents.state import Todo, FilesystemState
 from src.deepagents.prompts import (
     WRITE_TODOS_TOOL_DESCRIPTION,
@@ -25,10 +26,8 @@ def _fix_injected_params_schema(tool_obj):
                     field = schema.model_fields[param_name]
                     field.default = None
                     field.default_factory = None
-                    # Remove from required set if present (Pydantic v2)
                     if hasattr(schema, '__pydantic_required__'):
                         schema.__pydantic_required__.discard(param_name)
-            # Rebuild the model to regenerate the schema
             if hasattr(schema, 'model_rebuild'):
                 schema.model_rebuild(force=True)
     return tool_obj
@@ -45,11 +44,9 @@ def _normalize_path(file_path: str, files_dict: dict[str, str]) -> str:
     if not file_path:
         return file_path
 
-    # Direct exact match
     if file_path in files_dict:
         return file_path
 
-    # Map known context basenames
     lower = file_path.lower()
     if lower.endswith("/context/tender_summary.md") or lower.endswith("tender_summary.md"):
         candidate = "/workspace/context/tender_summary.md"
@@ -68,9 +65,6 @@ def _normalize_path(file_path: str, files_dict: dict[str, str]) -> str:
         if candidate in files_dict:
             return candidate
 
-    # Basename-insensitive match
-    import os
-
     base = os.path.basename(file_path).lower()
     for key in files_dict.keys():
         if os.path.basename(key).lower() == base:
@@ -84,14 +78,12 @@ def write_todos(
     todos: list[Todo], 
     tool_call_id: Annotated[str, InjectedToolCallId, InjectedToolArg]
 ) -> Command:
-    # Emit plan event for streaming
     try:
         from api.streaming.emitter import get_current_emitter
         import asyncio
         
         emitter = get_current_emitter()
         if emitter:
-            # Convert todos to plan items
             plan_items = []
             for todo in todos:
                 plan_items.append({
@@ -100,14 +92,13 @@ def write_todos(
                     "status": todo.status
                 })
             
-            # Schedule emit in current event loop
             try:
                 loop = asyncio.get_running_loop()
                 loop.create_task(emitter.emit_plan(plan_items))
             except RuntimeError:
-                pass  # No running loop
+                pass
     except Exception:
-        pass  # Don't break tool execution if streaming fails
+        pass
     
     return Command(
         update={
@@ -118,9 +109,7 @@ def write_todos(
         }
     )
 
-# Apply schema fix to remove injected params from validation
 write_todos = _fix_injected_params_schema(write_todos)
-
 
 @tool(description=LIST_FILES_TOOL_DESCRIPTION)
 @log_tool_call

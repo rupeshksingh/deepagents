@@ -111,14 +111,10 @@ class FilesystemMiddleware(AgentMiddleware):
         import logging
         logger = logging.getLogger(__name__)
         tool_name = tool_call.get("name", "")
-        # For filesystem tools, inject state from agent_state since InjectedState
-        # doesn't work across graph boundaries (parent → subagent)
         if tool_name in ["ls", "read_file", "write_file", "edit_file"]:
             args = tool_call.get("args", {})
             files_dict = agent_state.get("files", {})
             logger.warning(f"FILESYSTEM_MIDDLEWARE: tool={tool_name}, agent_state_keys={list(agent_state.keys()) if isinstance(agent_state, dict) else 'not_dict'}, files_count={len(files_dict)}, files_keys={list(files_dict.keys())[:3]}")
-            # Inject minimal state with only 'files' to avoid bloating tool call traces
-            # (Tools only need the files dict, not entire agent state)
             args["state"] = {"files": files_dict}
             tool_call["args"] = args
         return tool_call
@@ -163,11 +159,10 @@ def _get_agents(
     default_subagent_middleware = [
         PlanningMiddleware(),
         FilesystemMiddleware(),
-        # TODO: Add this back when fixed
         SummarizationMiddleware(
             model=model,
-            max_tokens_before_summary=60000,
-            messages_to_keep=12,
+            max_tokens_before_summary=120000,
+            messages_to_keep=20,
         ),
         AnthropicPromptCachingMiddleware(ttl="5m", unsupported_model_behavior="ignore"),
     ]
@@ -178,7 +173,7 @@ def _get_agents(
             tools=default_subagent_tools,
             checkpointer=False,
             middleware=default_subagent_middleware,
-            context_schema=DeepAgentState,  # Ensure 'files' is preserved in state
+            context_schema=DeepAgentState,
         )
     }
     for _agent in subagents:
@@ -207,7 +202,7 @@ def _get_agents(
             tools=_tools,
             middleware=_middleware,
             checkpointer=False,
-            context_schema=DeepAgentState,  # Preserve 'files' & compatible structure
+            context_schema=DeepAgentState,
         )
     return agents
 
@@ -256,9 +251,8 @@ def create_task_tool(
             state: Annotated[FilesystemState, InjectedState, InjectedToolArg] = None,
             tool_call_id: Annotated[str, InjectedToolCallId, InjectedToolArg] = "",
         ):
-            # Validate required parameters
             if not description or not description.strip():
-                return f"❌ Error: 'description' parameter is required and cannot be empty. The task tool requires BOTH 'subagent_type' AND 'description'. This error usually means the model hit max_tokens while generating tool calls. Please retry with a briefer explanation before the tool calls."
+                return "❌ Error: 'description' parameter is required and cannot be empty. The task tool requires BOTH 'subagent_type' AND 'description'. This error usually means the model hit max_tokens while generating tool calls. Please retry with a briefer explanation before the tool calls."
             
             if subagent_type not in agents:
                 return f"Error: invoked agent of type {subagent_type}, the only allowed types are {[f'`{k}`' for k in agents]}"
@@ -266,8 +260,7 @@ def create_task_tool(
             set_agent_context("subagent", f"subagent_{subagent_type}", subagent_type)
 
             log_subagent_call(subagent_type, description)
-            
-            # Emit SUBAGENT_START event for streaming
+
             subagent_id = f"subagent_{subagent_type}_{tool_call_id[:8]}"
             try:
                 from api.streaming.emitter import get_current_emitter
@@ -279,11 +272,9 @@ def create_task_tool(
                         subagent_description=description
                     )
             except Exception:
-                pass  # Don't break if streaming fails
+                pass
 
             sub_agent = agents[subagent_type]
-            # Create clean state for subagent with ONLY the task description
-            # Filter to only pass the three critical context files to subagents
             files_dict = state.get("files", {}) if state else {}
             context_files = {
                 k: v for k, v in files_dict.items()
@@ -298,10 +289,8 @@ def create_task_tool(
             )
             subagent_state = {
                 "messages": [{"role": "user", "content": description}],
-                "files": context_files,  # Only pass context files
-                # Get cluster_id from top-level state, not file content
+                "files": context_files,
                 "cluster_id": state.get("cluster_id") if state else None,
-                # Don't pass todos or other accumulated context
             }
             get_unified_logger().logger.warning(
                 f"SUBAGENT_INVOKE_DEBUG: about to invoke {subagent_type}, state_keys={list(subagent_state.keys())}, files_in_state={len(subagent_state.get('files', {}))}"
@@ -315,7 +304,6 @@ def create_task_tool(
                 f"SUBAGENT_RESULT_DEBUG: {subagent_type} returned, result_keys={list(result.keys()) if isinstance(result, dict) else 'not_dict'}, files_in_result={len(result.get('files', {})) if isinstance(result, dict) else 0}"
             )
             
-            # Emit SUBAGENT_END event for streaming
             try:
                 from api.streaming.emitter import get_current_emitter
                 emitter = get_current_emitter()
@@ -326,7 +314,7 @@ def create_task_tool(
                         ms=subagent_execution_ms
                     )
             except Exception:
-                pass  # Don't break if streaming fails
+                pass
             
             state_update = {}
             for k, v in result.items():
@@ -355,9 +343,8 @@ def create_task_tool(
             state: Annotated[FilesystemState, InjectedState, InjectedToolArg] = None,
             tool_call_id: Annotated[str, InjectedToolCallId, InjectedToolArg] = "",
         ):
-            # Validate required parameters
             if not description or not description.strip():
-                return f"❌ Error: 'description' parameter is required and cannot be empty. The task tool requires BOTH 'subagent_type' AND 'description'. This error usually means the model hit max_tokens while generating tool calls. Please retry with a briefer explanation before the tool calls."
+                return "❌ Error: 'description' parameter is required and cannot be empty. The task tool requires BOTH 'subagent_type' AND 'description'. This error usually means the model hit max_tokens while generating tool calls. Please retry with a briefer explanation before the tool calls."
             
             if subagent_type not in agents:
                 return f"Error: invoked agent of type {subagent_type}, the only allowed types are {[f'`{k}`' for k in agents]}"
@@ -366,7 +353,6 @@ def create_task_tool(
 
             log_subagent_call(subagent_type, description)
             
-            # Emit SUBAGENT_START event for streaming (sync version - schedule coroutine)
             subagent_id = f"subagent_{subagent_type}_{tool_call_id[:8]}"
             try:
                 from api.streaming.emitter import get_current_emitter
@@ -381,13 +367,11 @@ def create_task_tool(
                             subagent_description=description
                         ))
                     except RuntimeError:
-                        pass  # No running loop
+                        pass
             except Exception:
-                pass  # Don't break if streaming fails
+                pass
 
             sub_agent = agents[subagent_type]
-            # Create clean state for subagent with ONLY the task description
-            # Filter to only pass the three critical context files to subagents
             files_dict = state.get("files", {}) if state else {}
             context_files = {
                 k: v for k, v in files_dict.items()
@@ -402,17 +386,14 @@ def create_task_tool(
             )
             subagent_state = {
                 "messages": [{"role": "user", "content": description}],
-                "files": context_files,  # Only pass context files
-                # Get cluster_id from top-level state, not file content
+                "files": context_files,
                 "cluster_id": state.get("cluster_id") if state else None,
-                # Don't pass todos or other accumulated context
             }
             import time
             subagent_start_time = time.time()
             result = sub_agent.invoke(subagent_state)
             subagent_execution_ms = int((time.time() - subagent_start_time) * 1000)
             
-            # Emit SUBAGENT_END event for streaming (sync version - schedule coroutine)
             try:
                 from api.streaming.emitter import get_current_emitter
                 import asyncio
@@ -426,9 +407,9 @@ def create_task_tool(
                             ms=subagent_execution_ms
                         ))
                     except RuntimeError:
-                        pass  # No running loop
+                        pass
             except Exception:
-                pass  # Don't break if streaming fails
+                pass
             
             state_update = {}
             for k, v in result.items():
@@ -445,6 +426,5 @@ def create_task_tool(
                 }
             )
 
-    # Fix the tool schema to remove injected parameters
     from src.deepagents.tools import _fix_injected_params_schema as _fix_schema
     return _fix_schema(task)

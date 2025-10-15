@@ -49,7 +49,7 @@ class UnifiedLogger:
         for handler in self.logger.handlers[:]:
             self.logger.removeHandler(handler)
 
-        file_handler = logging.FileHandler(log_file)
+        file_handler = logging.FileHandler(log_file, encoding='utf-8')
         file_handler.setLevel(log_level)
 
         # JSON console output can be noisy; gate behind env var
@@ -70,13 +70,12 @@ class UnifiedLogger:
             self.logger.addHandler(console_handler)
         self.logger.propagate = False
 
-        # Human-readable narrative logger (file + optional console)
         os.makedirs("logs", exist_ok=True)
         self.narrative_logger = logging.getLogger("deepagents_narrative")
         self.narrative_logger.setLevel(log_level)
         for handler in self.narrative_logger.handlers[:]:
             self.narrative_logger.removeHandler(handler)
-        narrative_file_handler = logging.FileHandler("logs/narrative.log")
+        narrative_file_handler = logging.FileHandler("logs/narrative.log", encoding='utf-8')
         narrative_file_handler.setLevel(log_level)
         narrative_formatter = logging.Formatter("%(message)s")
         narrative_file_handler.setFormatter(narrative_formatter)
@@ -84,6 +83,13 @@ class UnifiedLogger:
         # Optional narrative console output
         enable_narrative_console = os.getenv("DEEPAGENTS_NARRATIVE_CONSOLE", "1") == "1"
         if enable_narrative_console:
+            # Configure console to handle UTF-8 on Windows
+            import sys
+            if sys.platform == 'win32':
+                try:
+                    sys.stdout.reconfigure(encoding='utf-8')
+                except (AttributeError, OSError):
+                    pass
             narrative_console = logging.StreamHandler()
             narrative_console.setLevel(log_level)
             narrative_console.setFormatter(narrative_formatter)
@@ -145,7 +151,7 @@ class UnifiedLogger:
             # Create a session-scoped narrative file handler
             try:
                 session_path = os.path.join("logs", f"session_{session_id}.log")
-                session_handler = logging.FileHandler(session_path)
+                session_handler = logging.FileHandler(session_path, encoding='utf-8')
                 session_handler.setLevel(self.log_level)
                 session_handler.setFormatter(logging.Formatter("%(message)s"))
                 self.narrative_logger.addHandler(session_handler)
@@ -711,7 +717,6 @@ def log_tool_call(func):
             try:
                 from api.streaming.emitter import get_current_emitter
                 from api.streaming.sanitizer import sanitize_tool_args
-                import asyncio
                 
                 emitter = get_current_emitter()
                 if emitter:

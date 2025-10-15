@@ -59,7 +59,7 @@ class ReactAgent:
         )
 
         self.model = ChatAnthropic(
-            model="claude-sonnet-4-5-20250929",
+            model="context-1m-2025-08-07",
             max_tokens=60000
         )
 
@@ -69,7 +69,6 @@ class ReactAgent:
 
         logger.info(f"ReactAgent initialized for org_{org_id}")
 
-    # Workspace constants (virtual filesystem paths)
     WORKSPACE_ROOT = "/workspace"
     CONTEXT_DIR = f"{WORKSPACE_ROOT}/context"
     ANALYSIS_DIR = f"{WORKSPACE_ROOT}/analysis"
@@ -82,7 +81,6 @@ class ReactAgent:
     def _create_agent(self):
         """Create the deep agent graph with custom tools and subagents."""
         try:
-            # Inject current date into system prompt
             copenhagen_tz = pytz.timezone('Europe/Copenhagen')
             current_date = datetime.now(copenhagen_tz).strftime("%A, %B %d, %Y")
             
@@ -123,7 +121,6 @@ class ReactAgent:
                 },
             ]
 
-            # Create streaming middleware for MVP transparency
             custom_middleware = [
                 StreamingMiddleware(),
                 PlanningStreamingMiddleware()
@@ -132,19 +129,18 @@ class ReactAgent:
             agent_graph = async_create_deep_agent(
                 tools=tools,
                 subagents=subagents,
-                instructions=system_prompt,  # Use formatted prompt with current date
+                instructions=system_prompt,
                 model=self.model,
                 checkpointer=self.checkpointer,
                 context_schema=DeepAgentState,
                 middleware=custom_middleware,
                 tool_configs={
-                    # Interrupt when the agent calls HITL tool
                     "request_human_input": True,
                 },
             )
 
             configured_agent = agent_graph.with_config(
-                {"recursion_limit": 1000, "max_execution_time": 300}
+                {"recursion_limit": 100, "max_execution_time": 120}
             )
 
             logger.info(
@@ -183,7 +179,6 @@ class ReactAgent:
 
     def _build_context_files(self, tender_id: str) -> Dict[str, str]:
         """Build /context files for the virtual filesystem from MongoDB metadata."""
-        # Get requirement cluster ID - this is critical for RAG search filtering
         from tool_utils import get_requirement_cluster_id
         cluster_id = get_requirement_cluster_id(self.mongo_client, tender_id, self.org_id)
         if cluster_id is None:
@@ -199,7 +194,6 @@ class ReactAgent:
         )
         file_index = []
         for d in docs:
-            # Summary is already fetched as agent_summary (with fallback) from tool_utils.get_proposal_files_summary
             s = d.get("summary", "No summary available")
             file_index.append(
                 {
@@ -215,7 +209,7 @@ class ReactAgent:
             self.CONTEXT_FILE_INDEX_PATH: json.dumps(
                 file_index, ensure_ascii=False, indent=2
             ),
-            self.CONTEXT_CLUSTER_ID_PATH: cluster_id,  # Add cluster_id for RAG search
+            self.CONTEXT_CLUSTER_ID_PATH: cluster_id,
         }
         return files
 
@@ -250,11 +244,8 @@ class ReactAgent:
                 }
                 return
 
-            # Build context files first - they'll be available in state
             context_files = self._build_context_files(tender_id) if tender_id else {}
             
-            # Pre-load summary & file index for main agent to answer generic questions quickly
-            # Subagents won't get this - they only get files in state (via middleware filtering)
             if tender_id and context_files:
                 tender_summary = context_files.get(self.CONTEXT_SUMMARY_PATH, "")
                 file_index = context_files.get(self.CONTEXT_FILE_INDEX_PATH, "")
@@ -276,7 +267,6 @@ User Query: {user_query}"""
 
             config = {"configurable": {"thread_id": thread_id}}
 
-            # Enforce single-tender-per-thread guard
             try:
                 self._ensure_single_tender_scope(thread_id, tender_id)
             except Exception as guard_err:
@@ -288,14 +278,11 @@ User Query: {user_query}"""
                 }
                 return
 
-            # Bootstrap /context files into virtual filesystem state
-            # IMPORTANT: files must be set unconditionally so checkpointer doesn't drop them
             state_input: Dict[str, Any] = {
                 "messages": messages,
-                "files": context_files,  # Always set, even if empty dict
+                "files": context_files,
             }
             if tender_id and context_files:
-                # Also store cluster_id at top-level for tools to access without file read
                 state_input["cluster_id"] = context_files.get(self.CONTEXT_CLUSTER_ID_PATH, "68c99b8a10844521ad051543")
 
             yield {
@@ -391,11 +378,8 @@ User Query: {user_query}"""
                     "success": False,
                 }
 
-            # Build context files first - they'll be available in state
             context_files = self._build_context_files(tender_id) if tender_id else {}
             
-            # Pre-load summary & file index for main agent to answer generic questions quickly
-            # Subagents won't get this - they only get files in state (via middleware filtering)
             if tender_id and context_files:
                 tender_summary = context_files.get(self.CONTEXT_SUMMARY_PATH, "")
                 file_index = context_files.get(self.CONTEXT_FILE_INDEX_PATH, "")
@@ -417,14 +401,11 @@ User Query: {user_query}"""
 
             config = {"configurable": {"thread_id": thread_id}}
 
-            # Enforce single-tender-per-thread guard
             self._ensure_single_tender_scope(thread_id, tender_id)
 
-            # Bootstrap /context files into virtual filesystem state
-            # IMPORTANT: files must be set unconditionally so checkpointer doesn't drop them
             state_input: Dict[str, Any] = {
                 "messages": messages,
-                "files": context_files,  # Always set, even if empty dict
+                "files": context_files,
             }
             if tender_id and context_files:
                 state_input["cluster_id"] = context_files.get(self.CONTEXT_CLUSTER_ID_PATH, "68c99b8a10844521ad051543")
@@ -482,8 +463,6 @@ User Query: {user_query}"""
             List of conversation messages
         """
         try:
-            # This would typically query the MongoDB checkpointer for conversation history
-            # For now, return empty list as the checkpointer handles this internally
             return []
         except Exception as e:
             logger.error(f"Error retrieving conversation history: {e}")
