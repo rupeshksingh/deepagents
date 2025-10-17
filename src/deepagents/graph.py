@@ -42,7 +42,7 @@ def agent_builder(
         PlanningMiddleware(),
         FilesystemMiddleware(),
         SubAgentMiddleware(
-            default_subagent_tools=tools,  # NOTE: These tools are piped to the general-purpose subagent.
+            default_subagent_tools=tools,  # NOTE: These tools are piped to the general_tender_analyst subagent.
             subagents=subagents if subagents is not None else [],
             model=model,
             is_async=is_async,

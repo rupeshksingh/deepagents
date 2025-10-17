@@ -94,15 +94,26 @@ class ReactAgent:
                 {
                     "name": "advanced_tender_analyst",
                     "description": (
-                        "Use this subagent when the user's question requires: "
-                        "(1) Analyzing MULTIPLE documents or sections in depth, "
-                        "(2) Iterative search-and-synthesis (one search reveals need for another), "
-                        "(3) Cross-referencing between contract sections (e.g., Rammeaftale + Bilag C + Bilag D), "
-                        "(4) Extracting conditional logic or procedures (e.g., step-by-step workflows, consequence chains), "
-                        "(5) Identifying patterns, risks, or requirements across scattered sources. "
-                        "DO NOT use for simple lookups (definitions, single values) - use search_tender_corpus directly instead. "
-                        "This agent will autonomously perform multiple searches, read files, and synthesize findings. "
-                        "Delegate ONE focused analysis task per agent. For multi-part questions, spawn multiple agents in parallel."
+                        "Specialized subagent for deep tender document analysis. Use when the task requires: "
+                        "(1) **Multi-document analysis**: Analyzing MULTIPLE Bilag documents or Rammeaftale sections in depth, "
+                        "(2) **Iterative exploration**: One search reveals leads requiring follow-up searches (e.g., finding 'bod' → searching for amounts → cross-referencing consequences), "
+                        "(3) **Cross-document synthesis**: Connecting information across Rammeaftale + multiple Bilag (e.g., penalties in Section 8 + Bilag C + Bilag D), "
+                        "(4) **Procedure extraction**: Understanding step-by-step workflows (Direkte Tildeling process, Miniudbud rules, escalation paths), "
+                        "(5) **Pattern identification**: Finding ALL mentions of X across entire tender (backup requirements, reporting obligations, termination triggers), "
+                        "(6) **Risk/compliance analysis**: Extracting penalties (bod), breach consequences (misligholdelse), CSR obligations, audit requirements. "
+                        ""
+                        "This subagent understands **Danish tender terminology**: "
+                        "• Rammeaftale (framework agreement), Bilag A-F (appendices), SKI (Danish procurement agency) "
+                        "• Direkte Tildeling (direct award), Miniudbud (mini-competition) "
+                        "• Bod (penalty), sanktioner (sanctions), misligholdelse (breach), ophævelse (termination) "
+                        "• Krav (requirements), forpligtelser (obligations), rapportering (reporting), omsætning (turnover) "
+                        "• Leveringsaftale (delivery contract), genopretning (recovery), sikkerhedskopiering (backup) "
+                        ""
+                        "**Language handling**: Will automatically adapt search keywords to match tender language (Danish/English). "
+                        ""
+                        "**DO NOT use for**: Simple lookups (deadline, contact, single fact) - use search_tender_corpus directly. "
+                        "**Multi-part questions**: Spawn multiple agents in parallel (one per independent sub-question). "
+                        "**Delegation**: Give complete task descriptions with specific documents, information needed, format, and language."
                     ),
                     "prompt": DOCUMENT_ANALYZER_PROMPT,
                     "tools": REACT_TOOLS_DOC,
@@ -110,13 +121,26 @@ class ReactAgent:
                 {
                     "name": "web_researcher",
                     "description": (
-                        "Use this subagent for web-based research requiring multiple searches and synthesis: "
-                        "(1) Competitor analysis across multiple companies, "
-                        "(2) Market research on technologies, trends, or industries, "
-                        "(3) Regulatory/legal research requiring multiple sources, "
-                        "(4) Any web research that needs iteration (one search revealing need for more). "
-                        "DO NOT use for single, straightforward web searches - call web_search tool directly instead. "
-                        "For multi-topic research (e.g., 3 competitors), spawn multiple agents in parallel (one per topic)."
+                        "Specialized subagent for external tender intelligence and market research. Use for: "
+                        "(1) **Competitor analysis**: Research multiple companies bidding on similar SKI frameworks (capabilities, past wins, pricing models), "
+                        "(2) **Market intelligence**: Danish/Nordic IT consulting rates, industry salary benchmarks, pricing strategies, "
+                        "(3) **Regulatory research**: Danish GDPR updates, EU procurement law, SKI framework policies, CSR directives, "
+                        "(4) **Technical standards**: ISO requirements (27001, 9001, 20000), Danish IT security standards, framework comparisons, "
+                        "(5) **CSR compliance**: Danish supply chain due diligence, EU CSR reporting requirements, sustainability standards, "
+                        "(6) **Company/client research**: Background on contracting authorities, past procurement patterns, industry trends. "
+                        ""
+                        "This subagent will: "
+                        "• Conduct 3-7 iterative web searches with refinement based on findings "
+                        "• Prioritize Danish sources (.dk domains) for Danish market context "
+                        "• Cross-verify information across multiple sources "
+                        "• Synthesize findings into structured intelligence with source links "
+                        ""
+                        "**Common Danish/Nordic sources**: datatilsynet.dk (Danish GDPR), konkurrence-styrelsen.dk (competition authority), "
+                        "SKI.dk (procurement), arbejdstilsynet.dk (labor inspectorate), ISO.org (standards). "
+                        ""
+                        "**DO NOT use for**: Single straightforward web lookups - call web_search tool directly. "
+                        "**Multi-topic research**: For 3+ independent topics (e.g., 3 competitors), spawn multiple agents in parallel (one per topic). "
+                        "**Delegation**: Specify research angles, target companies/topics, Danish market focus, and desired output format."
                     ),
                     "prompt": RESEARCH_AGENT_PROMPT,
                     "tools": REACT_TOOLS_WEB,

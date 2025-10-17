@@ -55,7 +55,19 @@ def _targeted_hybrid_search(
     """Cluster-scoped hybrid retrieval for tender documents (Qdrant)."""
     try:
         if not cluster_id or cluster_id == "UNKNOWN":
-            return {"error": "Cluster ID not available - cannot search"}
+            return {
+                "error": "CLUSTER_ID_MISSING",
+                "message": "Cannot perform search without a valid tender cluster_id",
+                "cause": "cluster_id is either missing from state or set to 'UNKNOWN'",
+                "suggestions": [
+                    "This is likely a system configuration issue, not your fault",
+                    "Check if cluster_id was set during agent initialization",
+                    "Verify /workspace/context/cluster_id.txt exists and has valid content",
+                    "As a fallback, try web_search if you need external information"
+                ],
+                "action_required": "Use request_human_input to resolve tender context configuration",
+                "technical_details": f"cluster_id={cluster_id}, org_id={org_id}"
+            }
 
         # ALWAYS filter by cluster_id (required for proper scoping)
         must_conditions: List[rest.Condition] = [
@@ -85,7 +97,22 @@ def _targeted_hybrid_search(
 
         return retriever.get_docs_without_callbacks(query)
     except Exception as e:  # noqa: BLE001
-        return {"error": f"Chunk search failed: {str(e)}", "documents": []}
+        error_message = str(e)
+        return {
+            "error": "VECTOR_SEARCH_FAILED",
+            "message": f"Hybrid vector search failed: {error_message}",
+            "suggestions": [
+                "This is likely a Qdrant vector database connection issue",
+                "Check if Qdrant service is running and accessible",
+                "Verify QDRANT_HOST and QDRANT_API_KEY environment variables",
+                "Try again in a moment if this is a temporary network issue",
+                "Use request_human_input if error persists"
+            ],
+            "technical_details": error_message,
+            "query": query,
+            "cluster_id": cluster_id,
+            "documents": []
+        }
 
 
 @tool
@@ -96,7 +123,53 @@ async def search_tender_corpus(
     file_ids: Optional[List[str]] = None,
     org_id: int = 1,
 ) -> str:
-    """Semantic search across tender files with LLM synthesis to prevent context bloat."""
+    """Semantic search across tender documents with LLM synthesis - your PRIMARY tool for finding information.
+    
+    BEST PRACTICES FOR TENDER SEARCH:
+    - **Language Adaptation**: If documents are in Danish, use Danish keywords for better recall
+      * English: "penalties breach termination" → Danish: "bod sanktioner misligholdelse ophævelse"
+      * English: "requirements obligations" → Danish: "krav forpligtelser"
+      * English: "reporting turnover" → Danish: "rapportering omsætning"
+    
+    - **Use file_ids to scope searches**: When analyzing specific Bilag or Rammeaftale sections
+      * Example: file_ids=["bilag_e_id"] to search only CSR appendix
+    
+    - **This returns SYNTHESIZED answers with citations** - not raw chunks
+      * You get structured information ready to use, not document fragments
+      * Always includes [Source: filename] citations
+    
+    - **ALWAYS prefer this over get_file_content** for initial exploration
+      * get_file_content returns 40 pages of raw text (slow, expensive)
+      * search_tender_corpus returns targeted answers (fast, precise)
+    
+    EXAMPLE QUERIES:
+    - "Find all reporting obligations" → Returns structured list with section citations
+    - "What are CSR documentation requirements?" → Returns requirements with sources
+    - "Identify termination triggers misligholdelse" → Returns contract clauses with risk analysis
+    - "SKI andel omsætning procent" → Returns fee percentage with citation"""
+    
+    # Parameter validation
+    if not query or query.strip() == "":
+        return """ERROR: EMPTY_QUERY
+
+        search_tender_corpus requires a non-empty query parameter.
+
+        CORRECT USAGE:
+        search_tender_corpus(query="CSR requirements Bilag E")
+
+        SUGGESTION:
+        Provide specific search terms related to what you want to find in the tender documents."""
+    
+    if file_ids is not None and not isinstance(file_ids, list):
+        return """ERROR: INVALID_PARAMETER
+                The file_ids parameter must be a list of strings, not a single string.
+
+                WRONG: file_ids="abc123"
+                CORRECT: file_ids=["abc123", "def456"]
+
+                SUGGESTION:
+                If you have a single file_id, wrap it in a list: file_ids=[your_id]"""
+    
     try:
         # Get cluster_id from state (set during initialization)
         from react_agent import ReactAgent
@@ -124,40 +197,79 @@ async def search_tender_corpus(
             chunks_with_citations.append(f"[Source: {file_name} (ID: {file_id})]\n{content}")
 
         if not chunks_with_citations:
-            return "No relevant chunks found for this query."
+            return f"""NO RESULTS FOUND for query: "{query}"
+
+            SUGGESTIONS TO IMPROVE YOUR SEARCH:
+            1. **Try broader terms**: Instead of "CSR violations in Bilag E Section 3.2", try just "CSR obligations"
+            2. **Adapt to document language**: If tender is Danish, use Danish keywords:
+            • "penalties" → "bod" or "sanktioner"
+            • "requirements" → "krav"
+            • "reporting" → "rapportering"
+            • "breach" → "misligholdelse"
+            • "termination" → "ophævelse"
+            3. **Check file scope**: Review /workspace/context/file_index.json to see which files cover this topic
+            4. **Use file_ids parameter**: Narrow search to specific files if you know which documents are relevant
+            5. **Try synonyms**: "backup" vs "sikkerhedskopiering" vs "genopretning"
+
+            WHAT WAS SEARCHED: Entire tender corpus (cluster_id: {cluster_id})
+            {f"FILE SCOPE: Limited to {len(file_ids)} file(s)" if file_ids else "FILE SCOPE: All tender files"}
+
+            NEXT STEPS:
+            • If this is a complex multi-document question, delegate to advanced_tender_analyst subagent
+            • Check file_index.json to understand which documents exist: read_file("/workspace/context/file_index.json")
+            • Try alternative search terms or break down your question into smaller searches"""
 
         # Synthesize with LLM to prevent context explosion
         combined_chunks = "\n\n---\n\n".join(chunks_with_citations)
         
         synthesis_prompt = f"""You are a tender document analyst providing information to an AI agent working on a bid management task.
 
-**Agent's Query**: {query}
+        **Agent's Query**: {query}
 
-**Retrieved Document Chunks**:
-{combined_chunks}
+        **Retrieved Document Chunks**:
+        {combined_chunks}
 
-**Your Task**: 
-Synthesize the above chunks into a clear, actionable answer that the agent can directly use. The agent needs facts, requirements, and context—not vague summaries.
+        **Your Task**: 
+        Synthesize the above chunks into a clear, actionable answer that the agent can directly use. The agent needs facts, requirements, and context—not vague summaries.
 
-**Output Requirements**:
-1. **Direct Answer First**: Lead with the specific information requested (values, dates, requirements, procedures)
-2. **Complete Context**: Include all relevant details the agent needs to act on this information (who, what, when, where, how)
-3. **Source Citations**: ALWAYS cite sources as [Source: filename] after each fact or requirement
-4. **Structured Format**: Use bullets, numbered lists, or tables when presenting multiple items
-5. **Exact Quotes**: When citing specific clauses, obligations, or criteria, preserve exact wording in quotes
-6. **Cross-References**: If information spans multiple files, explicitly note relationships and dependencies
-7. **Completeness Check**: If chunks are incomplete or contradictory, explicitly state what's missing or unclear
+        **Output Requirements**:
+        1. **Direct Answer First**: Lead with the specific information requested (values, dates, requirements, procedures)
+        2. **Complete Context**: Include all relevant details the agent needs to act on this information (who, what, when, where, how)
+        3. **Source Citations**: ALWAYS cite sources as [Source: filename] after each fact or requirement
+        4. **Structured Format**: Use bullets, numbered lists, or tables when presenting multiple items
+        5. **Exact Quotes**: When citing specific clauses, obligations, or criteria, preserve exact wording in quotes
+        6. **Cross-References**: If information spans multiple files, explicitly note relationships and dependencies
+        7. **Completeness Check**: If chunks are incomplete or contradictory, explicitly state what's missing or unclear
 
-**If chunks don't contain relevant information**: State clearly "No relevant information found in the searched documents" and suggest what might be searched instead.
+        **If chunks don't contain relevant information**: State clearly "No relevant information found in the searched documents" and suggest what might be searched instead.
 
-**Agent-Optimized Answer**:"""
+        **Agent-Optimized Answer**:"""
 
         llm = ChatOpenAI(model="gpt-4o", temperature=0.1)
         response = await llm.ainvoke(synthesis_prompt)
         return response.content if hasattr(response, 'content') else str(response)
         
     except Exception as e:  # noqa: BLE001
-        return f"Error in search_tender_corpus: {str(e)}"
+        error_message = str(e)
+        return f"""ERROR: TOOL_EXECUTION_FAILED
+
+        Tool: search_tender_corpus
+        Message: {error_message}
+
+        SUGGESTIONS:
+        1. **Try a different search strategy**: Use broader or narrower search terms
+        2. **Check if this is a network/database issue**: Try again in a moment
+        3. **Consider alternative approaches**:
+        • Use web_search for external/market information
+        • Delegate to advanced_tender_analyst subagent for complex analysis
+        • Try get_file_content if you know the exact file you need
+        4. **If error persists**: Use request_human_input to report the issue
+
+        TECHNICAL DETAILS:
+        Error: {error_message}
+        Parameters: query="{query}", file_ids={file_ids}, org_id={org_id}
+
+        ACTION: If this error repeats, it may be a system configuration issue. Request human assistance."""
 
 
 # Apply schema fix to remove injected params from validation
@@ -179,7 +291,18 @@ async def retrieve_full_document(
             mongo_client, file_id, tender_id or "", org_id
         )
         if not content:
-            return {"error": f"No content found for {file_id}", "file_id": file_id}
+            return {
+                "error": "FILE_NOT_FOUND",
+                "file_id": file_id,
+                "message": f"No content found for file_id: {file_id}",
+                "suggestions": [
+                    "Verify the file_id exists in /workspace/context/file_index.json",
+                    "Check if tender_id context is correct",
+                    "Use search_tender_corpus to discover which files contain relevant information",
+                    "Try get_file_content instead for raw file access"
+                ],
+                "note": "retrieve_full_document attempts to analyze the file with an LLM - if file is missing, no analysis is possible"
+            }
 
         user_question = (
             question or "Provide a concise, structured summary of this document."
@@ -196,7 +319,26 @@ async def retrieve_full_document(
 
         return {"file_id": file_id, "answer": answer_text}
     except Exception as e:  # noqa: BLE001
-        return {"error": f"retrieve_full_document failed: {str(e)}", "file_id": file_id}
+        error_message = str(e)
+        return {
+            "error": "TOOL_EXECUTION_FAILED",
+            "tool": "retrieve_full_document",
+            "file_id": file_id,
+            "message": f"Document retrieval and analysis failed: {error_message}",
+            "suggestions": [
+                "Try get_file_content instead for raw file access without LLM analysis",
+                "Use search_tender_corpus for targeted information extraction",
+                "If this is an LLM API issue, try again in a moment",
+                "Check if file_id and tender_id are valid"
+            ],
+            "technical_details": error_message,
+            "parameters": {
+                "file_id": file_id,
+                "tender_id": tender_id or "None",
+                "org_id": org_id,
+                "question": question or "default summary"
+            }
+        }
 
 
 @tool
@@ -210,18 +352,71 @@ async def get_file_content(
 ) -> str:
     """Return the raw markdown content of a tender file by file_id (no analysis).
     
-    ⚠️ WARNING: Returns large amounts of text (~40 pages). Only use when:
-    - You need verbatim quotes from a specific known file
-    - search_tender_corpus results reference a file repeatedly
-    - You need to see complete document structure
+    ⚠️ PERFORMANCE WARNING: Returns large amounts of text (~40 pages). Processing is SLOW and expensive.
     
-    ALWAYS try search_tender_corpus first before using this tool."""
+    ONLY USE WHEN:
+    - You need EXACT verbatim quotes from a specific known file (e.g., for legal compliance language)
+    - search_tender_corpus results reference the SAME file 5+ times, indicating you need full context
+    - You need to see complete document structure/flow (e.g., understanding full procedure sequence in Bilag B)
+    - You're analyzing a single known document in depth (e.g., "Summarize complete Bilag E")
+    
+    WHEN NOT TO USE:
+    - General information lookups → Use search_tender_corpus instead
+    - Multi-file analysis → Delegate to advanced_tender_analyst subagent
+    - Initial exploration → ALWAYS search first, never retrieve full files blindly
+    - Finding specific clauses → search_tender_corpus returns targeted results faster
+    
+    WORKFLOW:
+    1. Try search_tender_corpus with 2-3 targeted searches first
+    2. If search results consistently point to one file, then consider retrieving it
+    3. Get file_id from /workspace/context/file_index.json
+    4. Call this tool with that file_id
+    
+    TIP: Use file_index.json summaries to understand what each file contains before retrieving."""
+    
+    # Parameter validation
+    if not file_id or file_id.strip() == "":
+        return """ERROR: MISSING_FILE_ID
+
+        get_file_content requires a valid file_id parameter.
+
+        CORRECT USAGE:
+        First: read_file("/workspace/context/file_index.json")
+        Then: get_file_content(file_id="abc123...")
+
+        SUGGESTION:
+        Get file IDs from /workspace/context/file_index.json first. This file lists all available tender documents with their IDs and summaries.
+
+        EXAMPLE WORKFLOW:
+        1. read_file("/workspace/context/file_index.json")
+        2. Find the file you need (e.g., "Bilag E" about CSR)
+        3. Extract its file_id from the JSON
+        4. get_file_content(file_id="that_id_here")"""
+    
     try:
         content = get_file_content_from_id(
             mongo_client, file_id, tender_id or "", org_id
         )
         if not content:
-            return ""
+            return f"""ERROR: FILE_NOT_FOUND
+
+        No content available for file_id: {file_id}
+
+        SUGGESTIONS:
+        1. **Verify the file_id exists**: Check /workspace/context/file_index.json for valid file IDs
+        2. **Check tender context**: Ensure you're using the correct tender_id (if multiple tenders)
+        3. **Try search instead**: Use search_tender_corpus first to discover which files contain relevant information
+        4. **Check file name**: If searching for a specific document (e.g., 'Bilag E'), check file_index.json for the correct ID
+
+        NEXT STEPS:
+        • Use read_file("/workspace/context/file_index.json") to see all available files and their IDs
+        • Verify the file_id you're using matches an entry in file_index.json
+        • If you don't know the file_id, use search_tender_corpus to find relevant information first
+
+        TECHNICAL DETAILS:
+        file_id: {file_id}
+        tender_id: {tender_id or 'not specified'}
+        org_id: {org_id}"""
 
         # Truncate to approximately `max_pages` pages to avoid oversized returns
         max_chars = max(1, max_pages) * max(500, chars_per_page)
@@ -229,13 +424,50 @@ async def get_file_content(
             return content[:max_chars] + f"\n\n[... truncated to ~{max_pages} pages ...]"
         return content
     except Exception as e:  # noqa: BLE001
-        return f"Error: get_file_content failed: {str(e)}"
+        error_message = str(e)
+        return f"""ERROR: TOOL_EXECUTION_FAILED
+
+        Tool: get_file_content
+        Message: {error_message}
+
+        SUGGESTIONS:
+        1. **Verify file_id format**: Ensure it's a valid MongoDB ObjectId or file identifier
+        2. **Check database connection**: This might be a temporary network/database issue - try again
+        3. **Use alternative approach**: Try search_tender_corpus instead for targeted information
+        4. **Check tender context**: Verify tender_id is correct if working with multiple tenders
+        5. **If error persists**: Use request_human_input to report the database issue
+
+        TECHNICAL DETAILS:
+        Error: {error_message}
+        Parameters: file_id="{file_id}", tender_id="{tender_id or 'None'}", org_id={org_id}
+
+        ACTION: If this error repeats, it may be a database configuration or permissions issue."""
 
 
 @tool
 @log_tool_call
 def request_human_input(question: str, context: str = "") -> str:
-    """Request clarification or a decision from a human reviewer."""
+    """Request clarification or a decision from a human reviewer (bid team member).
+    
+    USE WHEN:
+    - Ambiguous tender clauses requiring legal interpretation
+    - Business decisions needed (pricing strategy, resource allocation, go/no-go)
+    - Contradictions in tender docs that need procurement office clarification
+    - Missing information that only the user/client can provide
+    - Risk assessment requires human judgment on severity/acceptability
+    
+    DO NOT USE:
+    - Before exhausting searches (search thoroughly first!)
+    - For information that's findable in documents (keep searching)
+    - For simple clarifications the agent can infer from context
+    
+    EXAMPLES:
+    - "Clause 8.5 contradicts Section 12.3 regarding penalty amounts - which takes precedence?"
+    - "Should we commit to 24/7 support or negotiate for business hours only?"
+    - "Risk identified: 3-strike termination rule. Is this acceptable for our delivery model?"
+    - "Tender doesn't specify max response time for support. What should we propose?"
+    
+    The question will be presented to the user for their input before proceeding."""
     prompt = "HITL REQUEST:\n" + question
     if context:
         prompt += "\n\nContext:\n" + context
@@ -245,16 +477,78 @@ def request_human_input(question: str, context: str = "") -> str:
 @tool
 @log_tool_call
 async def web_search(query: str) -> Dict[str, Any]:
-    """Web search for external context not present in tender docs."""
+    """Web search for external intelligence not present in tender documents.
+    
+    USE FOR:
+    - **Competitor intelligence**: Who bids on similar tenders, their capabilities, past SKI wins
+    - **Market data**: Pricing benchmarks, consultant rates in Denmark, industry salary ranges
+    - **Regulatory research**: Danish GDPR updates, EU procurement law changes, SKI framework policies
+    - **Technical standards**: ISO requirements, Danish IT security standards, framework comparisons
+    - **CSR compliance**: Danish supply chain due diligence requirements, EU CSR directives
+    - **Company research**: Client background, industry position, past procurement patterns
+    
+    DO NOT USE FOR:
+    - Information that should be in tender documents (search tender corpus first!)
+    - Danish company registry lookups (CVR numbers) - that's in tender docs
+    - Tender-specific facts (deadlines, contacts, requirements) - use tender search
+    
+    BEST PRACTICES:
+    - Prioritize Danish sources for Danish market context (.dk domains, Danish language)
+    - Include "Denmark" or "Danish" in queries for local context
+    - For competitors, search "SKI framework IT consulting [Company Name]"
+    - For regulations, search official sources (datatilsynet.dk for GDPR, konkurrence-styrelsen.dk)
+    
+    EXAMPLES:
+    - "Danish GDPR compliance requirements for IT suppliers 2024"
+    - "Average senior IT consultant hourly rate Copenhagen Denmark"
+    - "Company X SKI framework contracts IT consulting"
+    - "ISO 27001 certification requirements Denmark"
+    - "Danish CSR supply chain due diligence requirements"
+    
+    Returns: {"context": "...", "links": [...], "query": "...", "success": true/false}"""
     try:
         context, links = search({"orig_input": query})
+        
+        # Check if we got meaningful results
+        if not context or not links or (isinstance(context, str) and len(context.strip()) < 10):
+            return {
+                "context": "",
+                "links": [],
+                "query": query,
+                "success": False,
+                "error": "NO_RESULTS",
+                "message": f"Web search returned no results for query: '{query}'",
+                "suggestions": [
+                    "Try broader search terms (remove very specific details)",
+                    "Use alternative phrasings or synonyms",
+                    "For Danish topics, try both English and Danish terms",
+                    "Consider if this information exists publicly (some tender details may not be online)",
+                    "Try breaking down complex queries into simpler searches"
+                ],
+                "examples": [
+                    f"Instead of '{query}', try removing specific company names or dates",
+                    "Add 'Denmark' or 'Danish' to queries for local context",
+                    "Use industry-standard terminology rather than company-specific jargon"
+                ]
+            }
+        
         return {"context": context, "links": links, "query": query, "success": True}
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        error_message = str(e)
         return {
-            "context": "No context available",
+            "context": "",
             "links": [],
             "query": query,
             "success": False,
+            "error": "SEARCH_FAILED",
+            "message": f"Web search failed with error: {error_message}",
+            "suggestions": [
+                "This might be a temporary network or API issue - try again in a moment",
+                "Check if your query contains special characters that might cause issues",
+                "Try a simpler version of your query",
+                "If error persists, use request_human_input to report the issue"
+            ],
+            "technical_details": error_message
         }
 
 

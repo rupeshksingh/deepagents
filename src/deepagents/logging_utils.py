@@ -656,6 +656,28 @@ def log_tool_call(func):
                     }
             except Exception:
                 pass
+            
+            # Check if result is an error response for pattern tracking (sync)
+            is_error_result = False
+            error_type = None
+            error_message = None
+            
+            if isinstance(result, dict) and "error" in result:
+                is_error_result = True
+                error_type = result.get("error", "UNKNOWN")
+                error_message = result.get("message", str(result.get("error")))
+            elif isinstance(result, str) and result.startswith("ERROR:"):
+                is_error_result = True
+                lines = result.split("\n")
+                if lines:
+                    error_type = lines[0].replace("ERROR:", "").strip()
+                error_message = result[:200]
+            
+            if is_error_result:
+                logger.logger.warning(
+                    f"TOOL_RETURNED_ERROR: {tool_name} returned error response: {error_type} - {error_message}"
+                )
+            
             logger.log_tool_call_end(tool_name, tool_call_id, safe_result, execution_time)
             
             # Emit streaming tool_end event
@@ -737,6 +759,28 @@ def log_tool_call(func):
                     }
             except Exception:
                 pass
+            
+            # Check if result is an error response for pattern tracking (async)
+            is_error_result = False
+            error_type = None
+            error_message = None
+            
+            if isinstance(result, dict) and "error" in result:
+                is_error_result = True
+                error_type = result.get("error", "UNKNOWN")
+                error_message = result.get("message", str(result.get("error")))
+            elif isinstance(result, str) and result.startswith("ERROR:"):
+                is_error_result = True
+                lines = result.split("\n")
+                if lines:
+                    error_type = lines[0].replace("ERROR:", "").strip()
+                error_message = result[:200]
+            
+            if is_error_result:
+                logger.logger.warning(
+                    f"TOOL_RETURNED_ERROR: {tool_name} returned error response: {error_type} - {error_message}"
+                )
+            
             logger.log_tool_call_end(tool_name, tool_call_id, safe_result, execution_time)
             
             # Emit streaming tool_end event

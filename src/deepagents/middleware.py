@@ -172,7 +172,7 @@ def _get_agents(
         AnthropicPromptCachingMiddleware(ttl="5m", unsupported_model_behavior="ignore"),
     ]
     agents = {
-        "general-purpose": create_agent(
+        "general_tender_analyst": create_agent(
             model,
             system_prompt=BASE_AGENT_PROMPT,
             tools=default_subagent_tools,
