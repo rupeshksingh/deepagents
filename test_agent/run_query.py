@@ -31,7 +31,8 @@ async def run_query(query: str, tender_id: str) -> dict:
     mongo_client = MongoClient(mongodb_uri)
     agent = ReactAgent(mongo_client, org_id=1)
 
-    thread_id = f"test_thread_cli_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    # thread_id = f"test_thread_cli_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    thread_id = "sid-test-001"
 
     print("\n" + "=" * 70)
     print("🔍 USER QUERY:")
@@ -167,7 +168,7 @@ if __name__ == "__main__":
         print("\n" + "⚠" * 35)
         print("No query provided. Using default test query...")
         print("⚠" * 35)
-        query = "Use the advanced_tender_analyst subagent to list all available context files using the ls tool and then read the cluster_id.txt file. Report exactly what files are visible to the subagent and what the cluster_id value is."
+        query = ""
     
     if not tender_id:
         print("\n" + "❌" * 35)

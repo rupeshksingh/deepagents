@@ -354,6 +354,7 @@ async def get_file_content(
     
     ⚠️ PERFORMANCE WARNING: Returns large amounts of text (~40 pages). Processing is SLOW and expensive.
     
+    
     ONLY USE WHEN:
     - You need EXACT verbatim quotes from a specific known file (e.g., for legal compliance language)
     - search_tender_corpus results reference the SAME file 5+ times, indicating you need full context
@@ -365,6 +366,7 @@ async def get_file_content(
     - Multi-file analysis → Delegate to advanced_tender_analyst subagent
     - Initial exploration → ALWAYS search first, never retrieve full files blindly
     - Finding specific clauses → search_tender_corpus returns targeted results faster
+    - Need specific page ranges → This tool doesn't support pagination; use search instead
     
     WORKFLOW:
     1. Try search_tender_corpus with 2-3 targeted searches first

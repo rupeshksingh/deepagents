@@ -15,6 +15,9 @@ from src.deepagents.middleware import (
     FilesystemMiddleware,
     SubAgentMiddleware,
     ToolCallLoggingMiddleware,
+    CacheMonitoringMiddleware,
+    ToolOutputCompactionMiddleware,
+    TenderSummarizationPreprocessor,
 )
 from src.deepagents.prompts import BASE_AGENT_PROMPT
 from src.deepagents.model import get_default_model
@@ -36,9 +39,12 @@ def agent_builder(
         model = get_default_model()
 
     deepagent_middleware = [
+        # 1. Logging
         ToolCallLoggingMiddleware(
             agent_type="main_agent", agent_id=f"main_{id(model)}"
-        ),  # Enhanced logging middleware
+        ),
+        
+        # 2. Core Functionality
         PlanningMiddleware(),
         FilesystemMiddleware(),
         SubAgentMiddleware(
@@ -47,12 +53,19 @@ def agent_builder(
             model=model,
             is_async=is_async,
         ),
-        SummarizationMiddleware(
+        
+        # 3. Memory Optimization (NEW - Context Engineering)
+        ToolOutputCompactionMiddleware(),           # Phase 1: Compact old get_file_content outputs
+        TenderSummarizationPreprocessor(),          # Phase 5: Domain-aware compression
+        SummarizationMiddleware(                    # Existing: Generic LLM summarization
             model=model,
-            max_tokens_before_summary=60000,
+            max_tokens_before_summary=120000,
             messages_to_keep=12,
         ),
+        
+        # 4. Caching & Observability
         AnthropicPromptCachingMiddleware(ttl="5m", unsupported_model_behavior="ignore"),
+        CacheMonitoringMiddleware(),                # Phase 2: Track cache performance
     ]
     # Add tool interrupt config if provided
     if tool_configs is not None:

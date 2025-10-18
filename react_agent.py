@@ -60,7 +60,7 @@ class ReactAgent:
 
         self.model = ChatAnthropic(
             model="claude-sonnet-4-5-20250929",
-            max_tokens=60000
+            max_tokens=120000
         )
 
         set_agent_context("react_agent", f"react_agent_{org_id}")
@@ -197,6 +197,7 @@ class ReactAgent:
                     "thread_id": thread_id,
                     "tender_id": tender_id,
                     "created_at": datetime.now(timezone.utc),
+                    "message_count": 0,  # Track messages to control context injection
                 }
             )
             return
@@ -204,6 +205,32 @@ class ReactAgent:
             raise ValueError(
                 f"Thread {thread_id} is bound to tender {existing['tender_id']}, got {tender_id}"
             )
+    
+    def _should_inject_tender_context(self, thread_id: str) -> bool:
+        """
+        Determine if tender context should be injected.
+        Only inject for the FIRST message in a thread to avoid memory bloat.
+        
+        Returns:
+            True if this is the first message (inject context)
+            False if this is a follow-up message (skip context)
+        """
+        try:
+            threads_coll = self.mongo_client[self.db_name]["threads"]
+            thread = threads_coll.find_one({"thread_id": thread_id})
+            
+            if thread is None:
+                # Brand new thread - inject context
+                return True
+            
+            # Check if message_count field exists and is 0
+            message_count = thread.get("message_count", 0)
+            return message_count == 0
+            
+        except Exception as e:
+            # If we can't determine, inject context (safe default)
+            logger.warning(f"Error checking thread context injection status: {e}")
+            return True
 
     def _build_context_files(self, tender_id: str) -> Dict[str, str]:
         """Build /context files for the virtual filesystem from MongoDB metadata."""
@@ -237,7 +264,7 @@ class ReactAgent:
             self.CONTEXT_SUMMARY_PATH: summary,
             self.CONTEXT_SUPPLIER_PROFILE_PATH: "Supplier profile not provided.",
             self.CONTEXT_FILE_INDEX_PATH: json.dumps(
-                file_index, ensure_ascii=False, indent=2
+                file_index, ensure_ascii=False, indent=2, sort_keys=True
             ),
             self.CONTEXT_CLUSTER_ID_PATH: cluster_id,  # Add cluster_id for RAG search
         }
@@ -277,9 +304,13 @@ class ReactAgent:
             # Build context files first - they'll be available in state
             context_files = self._build_context_files(tender_id) if tender_id else {}
             
+            # Check if we should inject tender context (only for first message)
+            should_inject_context = self._should_inject_tender_context(thread_id) if tender_id else False
+            
             # Pre-load summary & file index for main agent to answer generic questions quickly
             # Subagents won't get this - they only get files in state (via middleware filtering)
-            if tender_id and context_files:
+            # ONLY inject on first message to avoid memory bloat
+            if tender_id and context_files and should_inject_context:
                 tender_summary = context_files.get(self.CONTEXT_SUMMARY_PATH, "")
                 file_index = context_files.get(self.CONTEXT_FILE_INDEX_PATH, "")
                 
@@ -296,6 +327,7 @@ class ReactAgent:
 User Query: {user_query}"""
                 messages = [{"role": "user", "content": enhanced_query}]
             else:
+                # Follow-up message - just use plain query
                 messages = [{"role": "user", "content": user_query}]
 
             config = {"configurable": {"thread_id": thread_id}}
@@ -370,6 +402,17 @@ User Query: {user_query}"""
                 f"Successfully processed streaming query in {processing_time_ms}ms"
             )
             log_query_end(session_id, agent_response)
+            
+            # Increment message count after successful response
+            if tender_id:
+                try:
+                    threads_coll = self.mongo_client[self.db_name]["threads"]
+                    threads_coll.update_one(
+                        {"thread_id": thread_id},
+                        {"$inc": {"message_count": 1}}
+                    )
+                except Exception as msg_count_err:
+                    logger.warning(f"Failed to increment message count: {msg_count_err}")
 
         except Exception as e:
             logger.error(f"Error in streaming query processing: {e}")
@@ -418,9 +461,13 @@ User Query: {user_query}"""
             # Build context files first - they'll be available in state
             context_files = self._build_context_files(tender_id) if tender_id else {}
             
+            # Check if we should inject tender context (only for first message)
+            should_inject_context = self._should_inject_tender_context(thread_id) if tender_id else False
+            
             # Pre-load summary & file index for main agent to answer generic questions quickly
             # Subagents won't get this - they only get files in state (via middleware filtering)
-            if tender_id and context_files:
+            # ONLY inject on first message to avoid memory bloat
+            if tender_id and context_files and should_inject_context:
                 tender_summary = context_files.get(self.CONTEXT_SUMMARY_PATH, "")
                 file_index = context_files.get(self.CONTEXT_FILE_INDEX_PATH, "")
                 
@@ -437,6 +484,7 @@ User Query: {user_query}"""
 User Query: {user_query}"""
                 messages = [{"role": "user", "content": enhanced_query}]
             else:
+                # Follow-up message - just use plain query
                 messages = [{"role": "user", "content": user_query}]
 
             config = {"configurable": {"thread_id": thread_id}}
@@ -468,6 +516,17 @@ User Query: {user_query}"""
 
             logger.info(f"Successfully processed sync query in {processing_time_ms}ms")
             log_query_end(session_id, agent_response)
+            
+            # Increment message count after successful response
+            if tender_id:
+                try:
+                    threads_coll = self.mongo_client[self.db_name]["threads"]
+                    threads_coll.update_one(
+                        {"thread_id": thread_id},
+                        {"$inc": {"message_count": 1}}
+                    )
+                except Exception as msg_count_err:
+                    logger.warning(f"Failed to increment message count: {msg_count_err}")
 
             return {
                 "response": agent_response,

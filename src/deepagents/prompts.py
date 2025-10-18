@@ -441,7 +441,7 @@ user: "What is today's date?"
 This is a trivial meta-question that doesn't require any subagent delegation.
 The main agent can answer directly using the current_date in its system prompt.
 </commentary>
-assistant: "Today is {current_date}."
+assistant: "Today is {{current_date}}."
 <commentary>
 No task tool needed - simple direct response to meta-question.
 </commentary>
@@ -467,7 +467,6 @@ READ_FILE_TOOL_DESCRIPTION = """Reads a file from the virtual workspace filesyst
 Usage:
 - The file_path parameter should be a workspace path (e.g., /workspace/context/tender_summary.md)
 - By default, it reads up to 2000 lines starting from the beginning of the file
-- You can optionally specify a line offset and limit (especially handy for long files), but it's recommended to read the whole file by not providing these parameters
 - Any lines longer than 2000 characters will be truncated
 - Results are returned using cat -n format, with line numbers starting at 1
 - You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful. 

@@ -174,9 +174,13 @@ async def stream_agent_response(
         context_files = agent._build_context_files(tender_id) if tender_id else {}
         logger.info(f"STREAMING_DEBUG: tender_id={tender_id}, context_files_count={len(context_files)}, files_keys={list(context_files.keys())[:3]}")
         
+        # Check if we should inject tender context (only for first message)
+        should_inject_context = agent._should_inject_tender_context(thread_id) if tender_id else False
+        
         # Pre-load summary & file index for main agent to answer generic questions quickly
         # Subagents won't get this - they only get files in state (via middleware filtering)
-        if tender_id and context_files:
+        # ONLY inject on first message to avoid memory bloat
+        if tender_id and context_files and should_inject_context:
             tender_summary = context_files.get(agent.CONTEXT_SUMMARY_PATH, "")
             file_index = context_files.get(agent.CONTEXT_FILE_INDEX_PATH, "")
             
@@ -193,6 +197,7 @@ async def stream_agent_response(
 User Query: {user_content}"""
             messages = [{"role": "user", "content": enhanced_query}]
         else:
+            # Follow-up message - just use plain query
             messages = [{"role": "user", "content": user_content}]
 
         # Bootstrap /context files into virtual filesystem state
@@ -502,6 +507,17 @@ User Query: {user_content}"""
             f"{processing_time_ms}ms, {tool_call_count} tool calls"
         )
         
+        # Increment message count after successful response
+        if tender_id:
+            try:
+                threads_coll = agent.mongo_client[agent.db_name]["threads"]
+                threads_coll.update_one(
+                    {"thread_id": thread_id},
+                    {"$inc": {"message_count": 1}}
+                )
+            except Exception as msg_count_err:
+                logger.warning(f"Failed to increment message count: {msg_count_err}")
+        
     except Exception as e:
         logger.error(f"Error in stream_agent_response for message {message_id}: {e}")
         
@@ -599,8 +615,11 @@ async def execute_agent_pure(
         # Build context files
         context_files = agent._build_context_files(tender_id) if tender_id else {}
         
-        # Enhance query with context
-        if tender_id and context_files:
+        # Check if we should inject tender context (only for first message)
+        should_inject_context = agent._should_inject_tender_context(thread_id) if tender_id else False
+        
+        # Enhance query with context ONLY on first message to avoid memory bloat
+        if tender_id and context_files and should_inject_context:
             tender_summary = context_files.get(agent.CONTEXT_SUMMARY_PATH, "")
             file_index = context_files.get(agent.CONTEXT_FILE_INDEX_PATH, "")
             
@@ -617,6 +636,7 @@ async def execute_agent_pure(
 User Query: {user_content}"""
             messages = [{"role": "user", "content": enhanced_query}]
         else:
+            # Follow-up message - just use plain query
             messages = [{"role": "user", "content": user_content}]
         
         # Build initial state
@@ -862,6 +882,17 @@ User Query: {user_content}"""
             f"Pure agent execution completed for message {message_id}: "
             f"{processing_time_ms}ms, {tool_call_count} tool calls"
         )
+        
+        # Increment message count after successful response
+        if tender_id:
+            try:
+                threads_coll = agent.mongo_client[agent.db_name]["threads"]
+                threads_coll.update_one(
+                    {"thread_id": thread_id},
+                    {"$inc": {"message_count": 1}}
+                )
+            except Exception as msg_count_err:
+                logger.warning(f"Failed to increment message count: {msg_count_err}")
     
     except Exception as e:
         logger.error(f"Error in execute_agent_pure for message {message_id}: {e}", exc_info=True)
