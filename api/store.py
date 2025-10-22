@@ -460,6 +460,7 @@ class ApiStore:
     ) -> PaginatedResponse[MessageResponse]:
         """
         List all messages in a chat with pagination.
+        Most recent messages first (reverse chronological order).
         
         Args:
             chat_id: The chat identifier
@@ -477,7 +478,7 @@ class ApiStore:
             
             cursor = self.messages_collection.find(
                 {"chat_id": chat_id}
-            ).sort("created_at", ASCENDING).skip(skip).limit(page_size)
+            ).sort("created_at", DESCENDING).skip(skip).limit(page_size)
             
             items = []
             for message_doc in cursor:
@@ -513,7 +514,8 @@ class ApiStore:
         status: MessageStatus,
         content: Optional[str] = None,
         processing_time_ms: Optional[int] = None,
-        error: Optional[str] = None
+        error: Optional[str] = None,
+        metadata: Optional[dict] = None
     ) -> None:
         """
         Update message status and optionally content.
@@ -524,6 +526,7 @@ class ApiStore:
             content: Updated content (for assistant messages)
             processing_time_ms: Processing time
             error: Error message if failed
+            metadata: Additional metadata to update
         """
         try:
             update_data = {"status": status.value}
@@ -534,6 +537,8 @@ class ApiStore:
                 update_data["processing_time_ms"] = processing_time_ms
             if error is not None:
                 update_data["error"] = error
+            if metadata is not None:
+                update_data["metadata"] = metadata
             
             self.messages_collection.update_one(
                 {"_id": ObjectId(message_id)},

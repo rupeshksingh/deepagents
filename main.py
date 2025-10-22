@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from pymongo import MongoClient
 import uvicorn
 
-from api.router import create_api_router
+from api.streaming_router import create_streaming_router
 from api.models import ApiInfoResponse, HealthResponse
 from api.store import ApiStore
 
@@ -28,7 +28,7 @@ env = os.getenv("ENV", "dev")
 dotenv_file = f".env.{env}"
 load_dotenv(dotenv_file)
 
-os.environ["LANGCHAIN_TRACING_V2"] = os.getenv("LANGCHAIN_TRACING_V2", "false")
+os.environ["LANGCHAIN_TRACING_V2"] = os.getenv("LANGCHAIN_TRACING_V2", "true")
 os.environ["LANGCHAIN_PROJECT"] = os.getenv("LANGCHAIN_PROJECT", "")
 os.environ["LANGCHAIN_API_KEY"] = os.getenv("LANGCHAIN_API_KEY", "")
 os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
@@ -90,11 +90,12 @@ except Exception as e:
 
 if mongo_client:
     try:
-        api_router = create_api_router(mongo_client, db_name="proposal_assistant")
-        app.include_router(api_router)
-        logger.info("API router registered successfully")
+        # Register streaming API router (MVP)
+        streaming_router = create_streaming_router(mongo_client, db_name="proposal_assistant")
+        app.include_router(streaming_router)
+        logger.info("Streaming API router registered successfully")
     except Exception as e:
-        logger.error(f"Failed to register API router: {e}")
+        logger.error(f"Failed to register streaming router: {e}")
         mongodb_status = "error"
 else:
     logger.warning("API endpoints not available due to MongoDB connection failure")

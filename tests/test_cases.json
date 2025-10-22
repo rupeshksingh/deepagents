@@ -1,0 +1,654 @@
+{
+  "metadata": {
+    "version": "1.0",
+    "description": "Comprehensive test suite for Danish Tender Analysis Agent (SKI 02.15)",
+    "total_tests": 30,
+    "categories": ["L1_Simple", "L2_Targeted", "L3_Deep", "Subagent_Delegation", "HITL", "Research_Hybrid", "Architecture_Guardrails"]
+  },
+  "test_cases": [
+    {
+      "id": "L1-01",
+      "name": "Submission Deadline and Modality",
+      "category": "L1_Simple",
+      "persona": "Bid Manager",
+      "complexity": "Simple",
+      "query_da": "Hvad er fristen for tilbudsafgivelse, og hvordan skal vi indsende tilbuddet?",
+      "query_en": "What is the submission deadline, and how should we submit the bid?",
+      "architecture_focus": ["L1_filesystem", "tender_summary"],
+      "expected_tools": ["read_file(/workspace/context/tender_summary.md)", "read_file(/workspace/context/file_index.json)"],
+      "expected_routing": "Main Agent → L1 only (no RAG)",
+      "success_criteria": [
+        "Provides exact deadline with date and time",
+        "Specifies submission portal/method",
+        "Clarifies time zone (CET/CEST)",
+        "No file_id visible to user",
+        "Response in under 10 seconds"
+      ],
+      "must_cite": ["tender_summary.md"],
+      "must_not": ["Use L2/L3 tools", "Invoke subagents", "Web search"]
+    },
+    {
+      "id": "L1-02",
+      "name": "Framework Mechanism - Mini-tender Prohibition",
+      "category": "L1_Simple",
+      "persona": "Bid Manager",
+      "complexity": "Simple",
+      "query_da": "Kan kunder gennemføre miniudbud under rammeaftale 02.15?",
+      "query_en": "Can customers run mini-competitions under framework agreement 02.15?",
+      "architecture_focus": ["L1_to_L2", "language_adaptation"],
+      "expected_tools": ["read_file", "search_tender_corpus"],
+      "expected_routing": "Main Agent → L1 → L2 (Bilag B)",
+      "success_criteria": [
+        "States that mini-tenders (miniudbud) are NOT allowed",
+        "Confirms only Direct Award (Direkte tildeling) is permitted",
+        "Cites Bilag B Section 1",
+        "Danish language adaptation (🇩🇰) if query is English"
+      ],
+      "must_cite": ["Bilag B"],
+      "key_facts": ["no_mini_tender", "direct_award_only"]
+    },
+    {
+      "id": "L2-01",
+      "name": "Evaluation Criteria and Weights",
+      "category": "L2_Targeted",
+      "persona": "Bid Strategist",
+      "complexity": "Moderate",
+      "query_en": "List the evaluation criteria, their exact weights, and the scoring model used. Are there subcriteria?",
+      "architecture_focus": ["L2_search", "L3_precision", "language_adaptation"],
+      "expected_tools": ["search_tender_corpus", "retrieve_full_document"],
+      "expected_routing": "L1 → L2 (EN 'evaluation criteria') → Detect 🇩🇰 → L2 (DA 'tildelingskriterier vægtning') → L3 for precision",
+      "success_criteria": [
+        "States 70% Quality / 30% Price weighting",
+        "Lists two subcriteria under Quality (Kompetencer/metoder and Sektorindsigt)",
+        "Mentions 1-10 point scale",
+        "Explains SKI uses pre-computed price points",
+        "Citations include page references",
+        "Language switch logged (🇩🇰 marker)"
+      ],
+      "must_cite": ["Bilag B", "Section 2.1", "Section 2.2.3"],
+      "key_facts": ["70_30_split", "two_quality_subcriteria", "1_10_scale"]
+    },
+    {
+      "id": "L2-02",
+      "name": "Mandatory vs Optional Service Areas",
+      "category": "L2_Targeted",
+      "persona": "Bid Writer",
+      "complexity": "Moderate",
+      "query_da": "Hvilke ydelsesområder er obligatoriske, og hvilke er valgfrie under 02.15?",
+      "query_en": "Which service areas are mandatory and which are optional under 02.15?",
+      "architecture_focus": ["L2_search", "structured_extraction"],
+      "expected_routing": "L1 → L2 (Bilag F) → Structured list",
+      "success_criteria": [
+        "Lists 7 mandatory areas (1-7): It-strategier, Forretningsbehov, It-udbud, It-sikkerhed, It-arkitektur, It-governance, Projekt-/programledelse",
+        "Lists 7 optional areas (8-14) including Test (11) and It-system drift (14)",
+        "Cites Bilag F Section 1 table",
+        "Clear separation between mandatory and optional"
+      ],
+      "must_cite": ["Bilag F", "Section 1"],
+      "key_facts": ["7_mandatory", "7_optional"]
+    },
+    {
+      "id": "L3-01",
+      "name": "CSR International Frameworks - Verbatim Extraction",
+      "category": "L3_Deep",
+      "persona": "Compliance Officer",
+      "complexity": "Advanced",
+      "query_da": "Analyser CSR-kravene i Bilag E. Hvilke internationale rammer skal vi overholde? Udtræk desuden de 10 principper fra FN's Global Compact ordret på dansk.",
+      "query_en": "Analyze the CSR requirements in Bilag E. Which international frameworks must we adhere to? Extract the 10 UN Global Compact principles verbatim in Danish.",
+      "architecture_focus": ["L3_precision", "verbatim_extraction", "document_analyzer"],
+      "expected_routing": "L1 → L2 (identify Bilag E) → L3 (full retrieval) → Precise extraction",
+      "success_criteria": [
+        "Lists international frameworks: UN Global Compact, UN Guiding Principles, OECD guidelines",
+        "Extracts all 10 Global Compact principles verbatim in Danish",
+        "Uses quote blocks for verbatim text",
+        "Cites Bilag E Section 2 and 2.1",
+        "No hallucination or paraphrasing of principles"
+      ],
+      "must_cite": ["Bilag E", "Section 2", "Section 2.1"],
+      "key_facts": ["un_global_compact", "ungp", "oecd"]
+    },
+    {
+      "id": "L3-02",
+      "name": "Personnel Replacement Procedure and Costs",
+      "category": "L3_Deep",
+      "persona": "Project Manager",
+      "complexity": "Advanced",
+      "query_da": "Hvis vi skal udskifte en nøglekonsulent under et projekt, hvad er proceduren? Skal kunden altid acceptere? Hvem betaler for oplæring af ny konsulent?",
+      "query_en": "If we need to replace a key consultant during a project, what is the procedure? Must the customer always accept? Who pays for onboarding the new consultant?",
+      "architecture_focus": ["L3_deep_reading", "legal_precision"],
+      "expected_routing": "L1 → L2 (find personnel clauses) → L3 (Bilag C Section 4.1) → Extract rules",
+      "success_criteria": [
+        "States customer's prior written acceptance required",
+        "Notes exception: no acceptance needed if due to employee's own circumstances",
+        "Confirms replacement must have equivalent qualifications",
+        "States supplier bears all costs (customer doesn't pay for onboarding)",
+        "Cites Bilag C Section 4.1"
+      ],
+      "must_cite": ["Bilag C", "Section 4.1"],
+      "key_facts": ["prior_acceptance", "supplier_pays_onboarding"]
+    },
+    {
+      "id": "SUB-01",
+      "name": "SLA Metrics with Cross-Document Comparison",
+      "category": "Subagent_Delegation",
+      "persona": "IT Service Manager",
+      "complexity": "Advanced",
+      "query_en": "Analyze the SLA metrics (uptime, response, resolution) across the Contract and Operations Annex. Identify thresholds, measurement windows, and service credits (bod). Highlight any contradictions.",
+      "architecture_focus": ["document_analyzer_subagent", "multi_document_comparison", "contradiction_detection"],
+      "expected_routing": "L1 → Delegate to Document Analyzer → L2/L3 on multiple docs → Synthesis",
+      "success_criteria": [
+        "Delegates to Document Analyzer subagent",
+        "Retrieves full documents for comparison",
+        "Creates matrix: Metric | Threshold | Measurement | Credit | Source",
+        "Explicitly flags contradictions if found",
+        "All metrics cited at line level",
+        "Saves artifact to /workspace/output/ or /workspace/analysis/"
+      ],
+      "must_cite": ["Bilag A SLA", "Contract"],
+      "expected_subagent": "Document Analyzer",
+      "key_facts": ["uptime_99_9", "monthly_measurement", "credit_calculation"]
+    },
+    {
+      "id": "SUB-02",
+      "name": "Deliverables Checklist for Multiple Service Areas",
+      "category": "Subagent_Delegation",
+      "persona": "Bid Writer",
+      "complexity": "Advanced",
+      "query_da": "Lav en 'hvad-skal-leveres' tjekliste for: 2.3 It-udbud, 2.4 It-sikkerhed/BC/compliance, og 2.7 Programledelse.",
+      "query_en": "Create a 'what-to-deliver' checklist for: 2.3 IT procurement, 2.4 IT security/BC/compliance, and 2.7 Program management.",
+      "architecture_focus": ["parallel_subagents", "artifact_creation", "synthesis"],
+      "expected_routing": "L1 → 3 parallel Document Analyzer tasks → Merge results → Save artifact",
+      "success_criteria": [
+        "Creates TODO list for planning",
+        "Delegates 3 parallel tasks to Document Analyzer",
+        "Merged checklist with all deliverables",
+        "Includes artifacts: policies, plans, standards, procedures",
+        "Saves to /workspace/output/deliverables_checklist.md",
+        "All items cited with source",
+        "Response includes downloadable file path"
+      ],
+      "must_cite": ["Bilag F sections 2.3, 2.4, 2.7"],
+      "expected_subagent": "Document Analyzer",
+      "expected_artifact": "/workspace/output/deliverables_checklist.md"
+    },
+    {
+      "id": "HITL-01",
+      "name": "Conflicting Information - Email Address Discrepancy",
+      "category": "HITL",
+      "persona": "Legal",
+      "complexity": "Advanced",
+      "query_da": "Hvor skal vi sende B.1 dokumentation efter tildeling? Angiv den præcise adresse.",
+      "query_en": "Where should we send B.1 documentation after award? Provide the exact address.",
+      "architecture_focus": ["contradiction_detection", "HITL_invocation"],
+      "expected_routing": "L2 (find B.1 .docx and .pdf) → L3 both → Detect conflict → request_human_input",
+      "success_criteria": [
+        "Identifies B.1 exists in both DOCX and PDF formats",
+        "Detects discrepancy: DOCX says aftaler@ski.dk, PDF says kundeservice@ski.dk",
+        "Invokes request_human_input with both sources clearly stated",
+        "Does NOT guess or choose without human confirmation",
+        "After HITL response, provides definitive answer with citation",
+        "Logs HITL event properly"
+      ],
+      "must_cite": ["B.1 .docx", "B.1 .pdf"],
+      "expected_behavior": "HITL_invocation",
+      "key_facts": ["conflict_detected", "human_input_requested"]
+    },
+    {
+      "id": "HITL-02",
+      "name": "Ambiguous Scope - Advisory vs Execution Balance",
+      "category": "HITL",
+      "persona": "Bid Manager",
+      "complexity": "Advanced",
+      "query_da": "Vores opgave er 60% rådgivning, 40% udførelse. Kan vi stadig bruge SKI 02.15?",
+      "query_en": "Our assignment is 60% advisory, 40% execution. Can we still use SKI 02.15?",
+      "architecture_focus": ["requirement_interpretation", "HITL_for_clarification"],
+      "expected_routing": "L2 (find scope rules) → L3 (Bilag B) → Interpret → HITL if unclear",
+      "success_criteria": [
+        "Finds rule that advisory must have 'overvægt' (predominant weight)",
+        "Cites Bilag B Section 2.2.1",
+        "Interprets 60/40 split as acceptable (60% > 50%)",
+        "May request human input if interpretation uncertain",
+        "Provides clear go/no-go advice"
+      ],
+      "must_cite": ["Bilag B", "Section 2.2.1"],
+      "key_facts": ["advisory_must_predominate", "60_40_acceptable"]
+    },
+    {
+      "id": "WEB-01",
+      "name": "GDPR Article 28 Mapping (External + Internal)",
+      "category": "Research_Hybrid",
+      "persona": "Data Protection Officer",
+      "complexity": "Research+",
+      "query_en": "Map the tender's data processor requirements to GDPR Article 28. Compare with latest Danish Data Protection Agency guidelines.",
+      "architecture_focus": ["web_researcher_subagent", "external_separation", "hybrid_synthesis"],
+      "expected_routing": "L1 → L2/L3 (find databehandleraftale) → Delegate to Web Researcher → Synthesis with separation",
+      "success_criteria": [
+        "Analyzes internal Data Processing Annex (L2/L3)",
+        "Delegates external research to Web Researcher",
+        "Output has TWO sections: 'Tender Requirements' and 'External Sources'",
+        "Tender citations use [Source: filename]",
+        "External info has web links clearly separated",
+        "No mixing of tender facts with external info",
+        "Provides mapping table: Tender Clause → GDPR Art. 28 element"
+      ],
+      "must_cite": ["Databehandleraftale/Data Processing Annex"],
+      "expected_subagent": "Web Researcher",
+      "external_sources_required": true,
+      "key_facts": ["gdpr_art_28", "datatilsynet_guidelines"]
+    },
+    {
+      "id": "WEB-02",
+      "name": "Customer Verification with External CVR Check",
+      "category": "Research_Hybrid",
+      "persona": "Sales Operations",
+      "complexity": "Research+",
+      "query_da": "Er Danmarks Radio (DR) kunde på 02.15 ifølge kundelisten? Find deres CVR-nummer. Verificer det eksternt via web-søgning.",
+      "query_en": "Is Danmarks Radio (DR) a customer on 02.15 according to the customer list? Find their CVR number. Verify it externally via web search.",
+      "architecture_focus": ["csv_data_extraction", "web_verification", "external_separation"],
+      "expected_routing": "L1 → L3 (Bilag A CSV) → Extract CVR → Web Researcher → Compare",
+      "success_criteria": [
+        "Searches Bilag A customer list (CSV)",
+        "Confirms Danmarks Radio is listed",
+        "Extracts CVR: 62786515 from internal list",
+        "Web Researcher finds external CVR",
+        "Compares and confirms match",
+        "Two citation types: [Source: Bilag A] and [External: link]"
+      ],
+      "must_cite": ["Bilag A Kundeliste"],
+      "expected_subagent": "Web Researcher",
+      "external_sources_required": true,
+      "key_facts": ["dr_is_customer", "cvr_62786515"]
+    },
+    {
+      "id": "ARCH-01",
+      "name": "Single-Tender Scope Enforcement",
+      "category": "Architecture_Guardrails",
+      "persona": "Bid Manager",
+      "complexity": "Simple",
+      "query_en": "While we're here, also compare this to SKI 02.17 It-konsulenter framework.",
+      "architecture_focus": ["single_tender_binding", "thread_isolation"],
+      "expected_routing": "Main Agent checks thread binding → Detects cross-tender request → Error/HITL",
+      "success_criteria": [
+        "Detects request for different tender",
+        "Refuses to cross-contaminate",
+        "Explains single-tender scope rule",
+        "Suggests starting new thread for 02.17",
+        "No data from 02.17 mixed into response",
+        "Logs scope violation attempt"
+      ],
+      "expected_behavior": "scope_enforcement",
+      "must_not": ["Access other tender data", "Mix tender contexts"]
+    },
+    {
+      "id": "ARCH-02",
+      "name": "Citation Discipline - No file_id Exposure",
+      "category": "Architecture_Guardrails",
+      "persona": "Any",
+      "complexity": "Simple",
+      "query_en": "What are the CSR requirements?",
+      "architecture_focus": ["citation_format", "no_internal_ids"],
+      "expected_routing": "Standard L2/L3",
+      "success_criteria": [
+        "Every claim has citation",
+        "Citation format: [Source: Bilag E CSR.pdf]",
+        "Optional section references: [Source: Bilag E, Section 3]",
+        "NO file_id visible in response (no 68c99b... strings)",
+        "NO MongoDB ObjectId strings visible",
+        "Citations are user-friendly"
+      ],
+      "validation": {
+        "regex_must_not_match": ["[0-9a-f]{24}", "file_id", "cluster_id"],
+        "regex_must_match": ["\\[Source: [^\\]]+\\]"]
+      }
+    },
+    {
+      "id": "ARCH-03",
+      "name": "Language Adaptation Observable Behavior",
+      "category": "Architecture_Guardrails",
+      "persona": "Any",
+      "complexity": "Moderate",
+      "query_en": "What's required for 'business continuity' and 'penetration testing'?",
+      "architecture_focus": ["language_detection", "query_adaptation", "observable_markers"],
+      "expected_routing": "L2 (EN) → Detect Danish → L2 (DA) → L3",
+      "success_criteria": [
+        "First search uses English terms",
+        "Detects Danish content in results",
+        "Second search uses Danish: 'forretningskontinuitet', 'penetrationstest', 'BC'",
+        "Console log shows 🇩🇰 DANISH marker",
+        "Tool call log shows two search_tender_corpus calls with different queries",
+        "Response cites Bilag F 2.4.2"
+      ],
+      "must_cite": ["Bilag F", "Section 2.4.2"],
+      "validation": {
+        "log_must_contain": ["🇩🇰", "forretningskontinuitet OR penetrationstest"]
+      }
+    },
+    {
+      "id": "ARCH-04",
+      "name": "Artifact Management - File Creation and Reporting",
+      "category": "Architecture_Guardrails",
+      "persona": "Finance",
+      "complexity": "Moderate",
+      "query_en": "Create an empty CSV template with correct columns for SKI monthly reporting.",
+      "architecture_focus": ["artifact_creation", "filesystem", "deliverable_tracking"],
+      "expected_routing": "L2/L3 (get field schema from Bilag D) → write_file → Return path",
+      "success_criteria": [
+        "Retrieves CSV field schema from Bilag D Section 2.3",
+        "Creates file in /workspace/output/",
+        "Filename includes context (e.g., ski_0215_reporting_template.csv)",
+        "CSV has all required headers in correct order",
+        "Includes comment row with format guidance",
+        "Response includes downloadable file path",
+        "File actually exists in checkpoint state"
+      ],
+      "must_cite": ["Bilag D", "Section 2.3"],
+      "expected_artifact": "/workspace/output/ski_0215_reporting_template.csv"
+    },
+    {
+      "id": "FIN-01",
+      "name": "Monthly Reporting Obligations and Penalties",
+      "category": "L2_Targeted",
+      "persona": "Finance Controller",
+      "complexity": "Moderate",
+      "query_da": "Hvad er vores økonomiske og rapporteringsforpligtelser over for SKI? Angiv procentdel, frekvens og konsekvenser ved for sen rapportering.",
+      "query_en": "What are our financial and reporting obligations to SKI? Specify percentage, frequency, and consequences of late reporting.",
+      "architecture_focus": ["L2_search", "L3_precision", "cross_document"],
+      "expected_routing": "L2 (Rammeaftale + Bilag D) → L3 for exact figures",
+      "success_criteria": [
+        "SKI fee: 2% of turnover",
+        "Reporting: Monthly, within 10 days after month end",
+        "Consequences: DKK 250 per reminder, SKI can estimate and charge penalty",
+        "3 failures in 12 months = material breach",
+        "Cites both Rammeaftale Section 8.5/8.6 and Bilag D"
+      ],
+      "must_cite": ["Rammeaftale", "Section 8.5", "Section 8.6", "Bilag D"],
+      "key_facts": ["2_percent_fee", "10_days_deadline", "250_dkk_reminder"]
+    },
+    {
+      "id": "FIN-02",
+      "name": "Burden of Proof - Sales Outside Framework",
+      "category": "L3_Deep",
+      "persona": "Finance/Legal",
+      "complexity": "Advanced",
+      "query_da": "Forklar SKI's rettigheder hvis de mistænker os for at sælge rammeaftaleydelser uden for aftalen. Hvem har bevisbyrden?",
+      "query_en": "Explain SKI's rights if they suspect we're selling framework services outside the agreement. Who holds the burden of proof?",
+      "architecture_focus": ["L3_legal_interpretation", "precise_quoting"],
+      "expected_routing": "L2 (identify clause) → L3 (Rammeaftale Section 8.3) → Precise extraction",
+      "success_criteria": [
+        "States supplier holds burden of proof ('Leverandøren har bevisbyrden')",
+        "Must document sales legitimately occurred outside framework",
+        "Documentation: signed declaration from Customer and Supplier",
+        "Repeated inability to provide docs = potential material breach",
+        "Cites Rammeaftale Section 8.3 with verbatim quote"
+      ],
+      "must_cite": ["Rammeaftale", "Section 8.3"],
+      "key_facts": ["supplier_burden_of_proof", "signed_declaration_required"]
+    },
+    {
+      "id": "WRITE-01",
+      "name": "CSR Response Outline with Tender Alignment",
+      "category": "Subagent_Delegation",
+      "persona": "Bid Writer",
+      "complexity": "Advanced",
+      "query_da": "Opsummer CSR-kravene og foreslå en responsstruktur vi kan udfylde.",
+      "query_en": "Summarize CSR requirements and suggest a response outline we can fill.",
+      "architecture_focus": ["L2_L3_analysis", "structured_output", "tender_alignment"],
+      "expected_routing": "L2 (EN 'CSR') → Detect 🇩🇰 → L2 (DA 'samfundsansvar') → L3 (Bilag E) → Structure",
+      "success_criteria": [
+        "Summarizes mandatory requirements vs evidence needed",
+        "Outline sections mirror Bilag E headings",
+        "Every bullet cited: [Source: Bilag E, Section X]",
+        "Groups by: policy, due diligence, supply chain, reporting",
+        "No mixing of external CSR norms into tender requirements",
+        "Outline is 1 page, actionable"
+      ],
+      "must_cite": ["Bilag E"],
+      "key_facts": ["global_compact", "due_diligence", "documentation_requirements"]
+    },
+    {
+      "id": "WRITE-02",
+      "name": "Draft IT Procurement Approach Text",
+      "category": "Subagent_Delegation",
+      "persona": "Bid Writer",
+      "complexity": "Research+",
+      "query_da": "Skriv på dansk et kort afsnit 'Tilgang til It-udbud (Ydelsesområde 2.3)' baseret på bilagets leverancer.",
+      "query_en": "Write in Danish a brief section 'Approach to IT Procurement (Service Area 2.3)' based on the annex deliverables.",
+      "architecture_focus": ["analysis_to_drafting", "sequential_workflow", "bid_writer_assistant"],
+      "expected_routing": "Document Analyzer (extract 2.3) → (Optional) Bid Writer Assistant → Draft with citations",
+      "success_criteria": [
+        "Text is in Danish",
+        "150-250 words",
+        "Persuasive, professional tone",
+        "Tethered to Bilag F Section 2.3 deliverables",
+        "Inline citations after claims",
+        "Covers both preparation and execution of procurement",
+        "Optional: saves to /workspace/output/"
+      ],
+      "must_cite": ["Bilag F", "Section 2.3"],
+      "expected_subagent": "Document Analyzer or Bid Writer Assistant",
+      "key_facts": ["forberedelse", "gennemførelse", "udbud"]
+    },
+    {
+      "id": "SME-01",
+      "name": "Skal vs Bør - Must vs Should Requirements",
+      "category": "L3_Deep",
+      "persona": "Technical SME",
+      "complexity": "Advanced",
+      "query_da": "Udtræk alle 'skal' (must) vs 'bør' (should) tekniske krav og gruppér efter domæne.",
+      "query_en": "Extract all 'skal' (must) vs 'bør' (should) technical requirements and group by domain.",
+      "architecture_focus": ["L3_systematic_extraction", "modal_verb_analysis", "structured_output"],
+      "expected_routing": "L2 (find technical spec) → L3 (full read) → Document Analyzer → Structured extraction",
+      "success_criteria": [
+        "Two separate lists: Skal (mandatory) and Bør (recommended)",
+        "Verbatim snippets (≤25 words) for each requirement",
+        "Grouped by domain: security, integration, performance, etc.",
+        "Each requirement cited with section/page",
+        "Table format: Requirement | Verbatim | Source | Domain"
+      ],
+      "must_cite": ["Kravspecifikation or relevant Bilag"],
+      "expected_subagent": "Document Analyzer"
+    },
+    {
+      "id": "SME-02",
+      "name": "Deep Dive - IT Architecture Sub-areas (Ydelsesområde 2.5)",
+      "category": "L3_Deep",
+      "persona": "Solution Architect",
+      "complexity": "Advanced",
+      "query_da": "Uddyb præcis hvilke underområder og ydelser 'Ydelsesområde 2.5: It-arkitektur' dækker.",
+      "query_en": "Detail exactly which sub-areas and services 'Service Area 2.5: IT Architecture' covers.",
+      "architecture_focus": ["L2_L3", "detailed_extraction", "structured_listing"],
+      "expected_routing": "L2 (find 2.5) → L3 (Bilag F Section 2.5) → Structured list",
+      "success_criteria": [
+        "Lists all sub-services under 2.5.1 Etablering and 2.5.2 Vedligeholdelse",
+        "Includes: data models, dataflow, platform selection, security design, environments, cloud/shared components, standard applications",
+        "Bullet or numbered list format",
+        "Cites Bilag F Section 2.5 with page references"
+      ],
+      "must_cite": ["Bilag F", "Section 2.5"],
+      "key_facts": ["etablering", "vedligeholdelse", "data_models", "security_design"]
+    },
+    {
+      "id": "SME-03",
+      "name": "License Advisory Scope with Language Adaptation",
+      "category": "L2_Targeted",
+      "persona": "Licensing Specialist",
+      "complexity": "Moderate",
+      "query_en": "What licensing advisory services can be procured under the framework?",
+      "architecture_focus": ["language_adaptation", "EN_to_DA_switch"],
+      "expected_routing": "L2 (EN) → Detect 🇩🇰 → L2 (DA: 'licens', 'open source', 'TCO', 'SAM') → Response",
+      "success_criteria": [
+        "Explains open source vs non-open source advisory",
+        "Mentions TCO, license optimization, SAM, tool selection",
+        "Uses Danish terminology in response",
+        "Log shows language switch to 🇩🇰",
+        "Cites Bilag F Section 3.2 (Ydelsesområde 9)"
+      ],
+      "must_cite": ["Bilag F", "Section 3.2"],
+      "validation": {
+        "log_must_contain": ["🇩🇰"]
+      },
+      "key_facts": ["open_source", "tco", "sam", "license_optimization"]
+    },
+    {
+      "id": "LEG-01",
+      "name": "Liability Cap and Exclusions",
+      "category": "L2_Targeted",
+      "persona": "Legal Counsel",
+      "complexity": "Moderate",
+      "query_en": "What is the liability cap and what damages are excluded? Note any exceptions to the cap.",
+      "architecture_focus": ["L2_L3", "legal_precision", "verbatim_quotes"],
+      "expected_routing": "L2 (find liability clauses) → L3 (Contract/Rammeaftale) → Precise extraction",
+      "success_criteria": [
+        "States cap as number or percentage (e.g., 100% annual contract value)",
+        "Lists exclusions: indirect loss, loss of profits, consequential damages",
+        "Notes exceptions to cap: gross negligence, willful misconduct",
+        "Verbatim quotes for critical terms",
+        "Cites specific section (e.g., Section 12)"
+      ],
+      "must_cite": ["Rammeaftale or Contract", "Liability section"],
+      "key_facts": ["liability_cap", "indirect_loss_excluded", "gross_negligence_exception"]
+    },
+    {
+      "id": "LEG-02",
+      "name": "Termination Rights, Notices, and Cure Periods",
+      "category": "L3_Deep",
+      "persona": "Legal Counsel",
+      "complexity": "Advanced",
+      "query_da": "Angiv opsigelsesregler: både 'for cause' og 'convenience', varslingsperioder, og afhjælpningsfrister.",
+      "query_en": "List termination rules: both 'for cause' and 'convenience', notice periods, and cure timelines.",
+      "architecture_focus": ["L3_multi_section", "comparative_extraction", "structured_table"],
+      "expected_routing": "L2 (find termination sections) → L3 (multiple sections) → Document Analyzer → Table",
+      "success_criteria": [
+        "Separate sections for termination for cause vs convenience",
+        "Table format: Type | Trigger | Notice | Cure | Source",
+        "Time periods normalized (days/weeks) with original phrasing noted",
+        "Citations per row",
+        "Covers both customer and supplier rights"
+      ],
+      "must_cite": ["Rammeaftale termination sections"],
+      "expected_subagent": "Document Analyzer"
+    },
+    {
+      "id": "LEG-03",
+      "name": "No Contractual Changes at Award Stage",
+      "category": "L2_Targeted",
+      "persona": "Legal Counsel",
+      "complexity": "Simple",
+      "query_da": "Kan vi ændre i Bilag C skabelonen ved tildeling?",
+      "query_en": "Can we alter the Bilag C template terms at award?",
+      "architecture_focus": ["L2_policy_lookup", "procurement_hygiene"],
+      "expected_routing": "L2 (Bilag B) → Direct answer",
+      "success_criteria": [
+        "States NO changes allowed to Bilag C at award",
+        "Award uses original framework offer",
+        "Cites Bilag B Section 2",
+        "May suggest acceptable route: clarify in C.1 opgavebeskrivelse without altering templates"
+      ],
+      "must_cite": ["Bilag B", "Section 2"],
+      "key_facts": ["no_template_changes", "original_offer_used"]
+    },
+    {
+      "id": "PERF-01",
+      "name": "Performance Test - Simple L1 Query Speed",
+      "category": "Architecture_Guardrails",
+      "persona": "Any",
+      "complexity": "Simple",
+      "query_en": "What is the SKI fee percentage?",
+      "architecture_focus": ["performance", "L1_speed"],
+      "expected_routing": "L1 only (tender_summary or quick L2)",
+      "success_criteria": [
+        "States 2% of turnover",
+        "Response time ≤ 10 seconds",
+        "Cites Rammeaftale Section 8.5",
+        "No unnecessary tool calls"
+      ],
+      "must_cite": ["Rammeaftale", "Section 8.5"],
+      "performance_threshold_seconds": 10
+    },
+    {
+      "id": "PERF-02",
+      "name": "Performance Test - Complex Multi-Document Analysis",
+      "category": "Architecture_Guardrails",
+      "persona": "Any",
+      "complexity": "Advanced",
+      "query_en": "Identify the most significant risks for us as a supplier: (A) Breach and penalties, (B) CSR requirements, (C) Auditing rules.",
+      "architecture_focus": ["performance", "parallel_execution", "comprehensive_analysis"],
+      "expected_routing": "L1 → TODO → 3 parallel Document Analyzer tasks → Synthesis",
+      "success_criteria": [
+        "Creates TODO list",
+        "Delegates 3 parallel analyses",
+        "Comprehensive risk summary for all three areas",
+        "All claims cited",
+        "Response time ≤ 180 seconds (3 minutes)",
+        "Optional artifact saved"
+      ],
+      "must_cite": ["Rammeaftale", "Bilag C", "Bilag D", "Bilag E"],
+      "expected_subagent": "Document Analyzer",
+      "performance_threshold_seconds": 180
+    },
+    {
+      "id": "EDGE-01",
+      "name": "Edge Case - Ambiguous Query Clarification",
+      "category": "HITL",
+      "persona": "Any",
+      "complexity": "Simple",
+      "query_da": "Kan vi levere dette?",
+      "query_en": "Can we deliver this?",
+      "architecture_focus": ["ambiguity_detection", "clarification_request"],
+      "expected_routing": "Main Agent recognizes ambiguity → Asks clarifying question",
+      "success_criteria": [
+        "Does NOT run premature RAG searches",
+        "Asks user to clarify which service area or requirement",
+        "No hallucination",
+        "Polite, professional tone",
+        "May list available service areas to help user"
+      ],
+      "expected_behavior": "clarification_request",
+      "must_not": ["Make assumptions", "Provide generic answer without context"]
+    },
+    {
+      "id": "EDGE-02",
+      "name": "Edge Case - Information Not in Tender",
+      "category": "L2_Targeted",
+      "persona": "Any",
+      "complexity": "Moderate",
+      "query_da": "Hvad er deadlinen for Q&A spørgsmål?",
+      "query_en": "What is the deadline for Q&A questions?",
+      "architecture_focus": ["negative_result_handling", "honest_reporting"],
+      "expected_routing": "L1 → L2 comprehensive search → Not found → Honest response",
+      "success_criteria": [
+        "Honest 'not found' response",
+        "No hallucination of dates",
+        "Suggests where it might be (e.g., procurement notice, separate Q&A doc)",
+        "May suggest asking for clarification",
+        "Cites what was searched"
+      ],
+      "expected_behavior": "not_found_handling",
+      "must_not": ["Hallucinate information", "Guess dates"]
+    },
+    {
+      "id": "COMPLEX-01",
+      "name": "Comprehensive Sustainability Analysis with CSRD Benchmarking",
+      "category": "Research_Hybrid",
+      "persona": "Bid Manager + Sustainability Expert",
+      "complexity": "Research+",
+      "query_en": "Perform comprehensive CSR analysis: requirements, documentation needed, and how tender obligations relate to EU CSRD implementation in Denmark.",
+      "architecture_focus": ["task_planning", "parallel_delegation", "hybrid_synthesis", "complex_todo"],
+      "expected_routing": "TODO → Document Analyzer (CSR internal) + Web Researcher (CSRD external) → Complex synthesis",
+      "success_criteria": [
+        "Creates comprehensive TODO list with 3+ tasks",
+        "Parallel delegation to both Document Analyzer and Web Researcher",
+        "Internal analysis: requirements, documentation, frameworks",
+        "External research: CSRD status, Danish implementation timeline",
+        "Synthesis connects internal requirements to external regulatory landscape",
+        "Perfect separation: internal citations vs external links",
+        "May save comprehensive report to /workspace/output/"
+      ],
+      "must_cite": ["Bilag E"],
+      "expected_subagent": ["Document Analyzer", "Web Researcher"],
+      "external_sources_required": true,
+      "expected_artifact": "/workspace/output/csr_csrd_analysis.md"
+    }
+  ]
+}
+
