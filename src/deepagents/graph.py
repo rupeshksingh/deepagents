@@ -17,7 +17,6 @@ from src.deepagents.middleware import (
     ToolCallLoggingMiddleware,
     CacheMonitoringMiddleware,
     ToolOutputCompactionMiddleware,
-    TenderSummarizationPreprocessor,
 )
 from src.deepagents.prompts import BASE_AGENT_PROMPT
 from src.deepagents.model import get_default_model
@@ -56,10 +55,10 @@ def agent_builder(
         
         # 3. Memory Optimization (NEW - Context Engineering)
         ToolOutputCompactionMiddleware(),           # Phase 1: Compact old get_file_content outputs
-        TenderSummarizationPreprocessor(),          # Phase 5: Domain-aware compression
-        SummarizationMiddleware(                    # Existing: Generic LLM summarization
+        # NOTE: TenderSummarizationPreprocessor removed - replaced by PersistentSummarizationMiddleware in ReactAgent
+        SummarizationMiddleware(                    # Safety net only (higher threshold)
             model=model,
-            max_tokens_before_summary=120000,
+            max_tokens_before_summary=150000,       # Increased - only triggers if persistent fails
             messages_to_keep=12,
         ),
         
@@ -67,12 +66,25 @@ def agent_builder(
         AnthropicPromptCachingMiddleware(ttl="5m", unsupported_model_behavior="ignore"),
         CacheMonitoringMiddleware(),                # Phase 2: Track cache performance
     ]
-    # Add tool interrupt config if provided
+    # Insert custom middleware BEFORE SummarizationMiddleware
+    # This ensures persistent summarization runs before the generic safety net
+    if middleware is not None:
+        try:
+            # Find the index of SummarizationMiddleware
+            summarization_idx = next(
+                i for i, m in enumerate(deepagent_middleware) 
+                if isinstance(m, SummarizationMiddleware)
+            )
+            # Insert custom middleware before it
+            for i, m in enumerate(middleware):
+                deepagent_middleware.insert(summarization_idx + i, m)
+        except StopIteration:
+            # Fallback: append at end if SummarizationMiddleware not found
+            deepagent_middleware.extend(middleware)
+    
+    # Add tool interrupt config if provided (at the end)
     if tool_configs is not None:
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=tool_configs))
-
-    if middleware is not None:
-        deepagent_middleware.extend(middleware)
 
     return create_agent(
         model,

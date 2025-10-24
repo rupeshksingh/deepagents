@@ -163,13 +163,12 @@ def _get_agents(
     default_subagent_middleware = [
         PlanningMiddleware(),
         FilesystemMiddleware(),
-        # Memory Optimization (same as main agent)
+        # Memory Optimization
         ToolOutputCompactionMiddleware(),
-        TenderSummarizationPreprocessor(),
-        # TODO: Add this back when fixed
+        # NOTE: No persistent summarization for subagents (they're ephemeral, checkpointer=False)
         SummarizationMiddleware(
             model=model,
-            max_tokens_before_summary=120000,
+            max_tokens_before_summary=150000,  # Aligned with main agent threshold
             messages_to_keep=12,
         ),
         # Caching
@@ -801,6 +800,43 @@ Tool Output Compaction Summary:
 - Files Compacted: {self.compaction_stats['total_compacted']}
 - Tokens Saved: {self.compaction_stats['tokens_saved']:,}
 """
+
+
+###########################
+# Persistent Summarization Middleware
+###########################
+
+
+class PersistentSummarizationMiddleware(AgentMiddleware):
+    """Inject persistent conversation summaries into context.
+    
+    Summaries are created and stored by ReactAgent's ConversationSummaryManager.
+    This middleware only handles injection during requests.
+    """
+    
+    def __init__(self, summary_manager):
+        """Initialize with summary manager from ReactAgent."""
+        import logging
+        self.logger = logging.getLogger(__name__)
+        self.summary_manager = summary_manager
+    
+    def modify_model_request(
+        self, request: ModelRequest, agent_state: AgentState, runtime: Runtime
+    ) -> ModelRequest:
+        """Inject summary if available."""
+        try:
+            thread_id = runtime.config.get("configurable", {}).get("thread_id")
+            if not thread_id:
+                return request
+            
+            # Inject summary (replaces old messages with summary)
+            request = self.summary_manager.inject_summary(thread_id, request)
+            
+        except Exception as e:
+            self.logger.error(f"Error injecting summary: {e}")
+            # Don't fail the request, just skip summarization
+        
+        return request
 
 
 ###########################
