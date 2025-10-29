@@ -23,6 +23,7 @@ def file_reducer(l, r):
 class DeepAgentState(AgentState):
     todos: NotRequired[list[Todo]]
     files: Annotated[NotRequired[dict[str, str]], file_reducer]
+    cluster_id: NotRequired[str]
 
 
 class PlanningState(AgentState):

@@ -3,13 +3,25 @@ from langchain_core.tools import BaseTool
 from langchain_core.language_models import LanguageModelLike
 from langgraph.types import Checkpointer
 from langchain.agents import create_agent
-from langchain.agents.middleware import AgentMiddleware, SummarizationMiddleware, HumanInTheLoopMiddleware
+from langchain.agents.middleware import (
+    AgentMiddleware,
+    SummarizationMiddleware,
+    HumanInTheLoopMiddleware,
+)
 from langchain.agents.middleware.human_in_the_loop import ToolConfig
 from langchain.agents.middleware.prompt_caching import AnthropicPromptCachingMiddleware
-from src.deepagents.middleware import PlanningMiddleware, FilesystemMiddleware, SubAgentMiddleware, ToolCallLoggingMiddleware
+from src.deepagents.middleware import (
+    PlanningMiddleware,
+    FilesystemMiddleware,
+    SubAgentMiddleware,
+    ToolCallLoggingMiddleware,
+    CacheMonitoringMiddleware,
+    ToolOutputCompactionMiddleware,
+)
 from src.deepagents.prompts import BASE_AGENT_PROMPT
 from src.deepagents.model import get_default_model
 from src.deepagents.types import SubAgent, CustomSubAgent
+
 
 def agent_builder(
     tools: Sequence[Union[BaseTool, Callable, dict[str, Any]]],
@@ -26,37 +38,63 @@ def agent_builder(
         model = get_default_model()
 
     deepagent_middleware = [
-        ToolCallLoggingMiddleware(agent_type="main_agent", agent_id=f"main_{id(model)}"),  # Enhanced logging middleware
+        # 1. Logging
+        ToolCallLoggingMiddleware(
+            agent_type="main_agent", agent_id=f"main_{id(model)}"
+        ),
+        
+        # 2. Core Functionality
         PlanningMiddleware(),
         FilesystemMiddleware(),
         SubAgentMiddleware(
-            default_subagent_tools=tools,   # NOTE: These tools are piped to the general-purpose subagent.
+            default_subagent_tools=tools,  # NOTE: These tools are piped to the general_tender_analyst subagent.
             subagents=subagents if subagents is not None else [],
             model=model,
             is_async=is_async,
         ),
-        SummarizationMiddleware(
+        
+        # 3. Memory Optimization (NEW - Context Engineering)
+        ToolOutputCompactionMiddleware(),           # Phase 1: Compact old get_file_content outputs
+        # NOTE: TenderSummarizationPreprocessor removed - replaced by PersistentSummarizationMiddleware in ReactAgent
+        SummarizationMiddleware(                    # Safety net only (higher threshold)
             model=model,
-            max_tokens_before_summary=120000,
-            messages_to_keep=20,
+            max_tokens_before_summary=150000,       # Increased - only triggers if persistent fails
+            messages_to_keep=12,
         ),
-        AnthropicPromptCachingMiddleware(ttl="5m", unsupported_model_behavior="ignore")
+        
+        # 4. Caching & Observability
+        AnthropicPromptCachingMiddleware(ttl="5m", unsupported_model_behavior="ignore"),
+        CacheMonitoringMiddleware(),                # Phase 2: Track cache performance
     ]
-    # Add tool interrupt config if provided
+    # Insert custom middleware BEFORE SummarizationMiddleware
+    # This ensures persistent summarization runs before the generic safety net
+    if middleware is not None:
+        try:
+            # Find the index of SummarizationMiddleware
+            summarization_idx = next(
+                i for i, m in enumerate(deepagent_middleware) 
+                if isinstance(m, SummarizationMiddleware)
+            )
+            # Insert custom middleware before it
+            for i, m in enumerate(middleware):
+                deepagent_middleware.insert(summarization_idx + i, m)
+        except StopIteration:
+            # Fallback: append at end if SummarizationMiddleware not found
+            deepagent_middleware.extend(middleware)
+    
+    # Add tool interrupt config if provided (at the end)
     if tool_configs is not None:
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=tool_configs))
 
-    if middleware is not None:
-        deepagent_middleware.extend(middleware)
-
     return create_agent(
         model,
-        prompt=instructions + "\n\n" + BASE_AGENT_PROMPT,
+        system_prompt=instructions + "\n\n" + BASE_AGENT_PROMPT,
         tools=tools,
         middleware=deepagent_middleware,
         context_schema=context_schema,
         checkpointer=checkpointer,
     )
+
 
 def create_deep_agent(
     tools: Sequence[Union[BaseTool, Callable, dict[str, Any]]] = [],
@@ -99,6 +137,7 @@ def create_deep_agent(
         tool_configs=tool_configs,
         is_async=False,
     )
+
 
 def async_create_deep_agent(
     tools: Sequence[Union[BaseTool, Callable, dict[str, Any]]] = [],

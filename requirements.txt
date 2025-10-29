@@ -1,7 +1,8 @@
 fastembed==0.7.3
-langchain==1.0.0a9
+langchain==1.0.0a12
 langchain_cohere==0.4.6
-langchain_openai==0.3.33 
+langchain_openai==1.0.0a3
+langchain_anthropic==1.0.0a3
 langchain_qdrant==0.2.1
 langgraph-checkpoint-mongodb==0.2.1
 pymongo==4.15.1
@@ -9,3 +10,5 @@ python-dotenv==1.1.1
 tavily-python==0.7.12
 fastapi==0.118.0
 uvicorn==0.37.0
+google-genai~=1.29.0
+langchain-google-genai>=2.0.9

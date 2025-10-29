@@ -1,7 +1,9 @@
-from langchain_core.tools import tool, InjectedToolCallId
+from langchain_core.tools import tool, InjectedToolCallId, InjectedToolArg
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
-from typing import Annotated, Union
+from typing import Annotated, Union, Optional
+from langchain.tools.tool_node import InjectedState
+from pydantic import create_model
 from src.deepagents.state import Todo, FilesystemState
 from src.deepagents.prompts import (
     WRITE_TODOS_TOOL_DESCRIPTION,
@@ -12,11 +14,101 @@ from src.deepagents.prompts import (
 )
 from src.deepagents.logging_utils import log_tool_call
 
+
+def _fix_injected_params_schema(tool_obj):
+    """Remove injected params from tool schema to prevent validation errors."""
+    if hasattr(tool_obj, 'args_schema') and tool_obj.args_schema is not None:
+        schema = tool_obj.args_schema
+        if hasattr(schema, 'model_fields'):
+            for param_name in ['state', 'tool_call_id']:
+                if param_name in schema.model_fields:
+                    field = schema.model_fields[param_name]
+                    field.default = None
+                    field.default_factory = None
+                    # Remove from required set if present (Pydantic v2)
+                    if hasattr(schema, '__pydantic_required__'):
+                        schema.__pydantic_required__.discard(param_name)
+            # Rebuild the model to regenerate the schema
+            if hasattr(schema, 'model_rebuild'):
+                schema.model_rebuild(force=True)
+    return tool_obj
+
+
+def _normalize_path(file_path: str, files_dict: dict[str, str]) -> str:
+    """Normalize common path variants to keys present in files_dict.
+
+    Strategy:
+    - Known /workspace/context/* to canonical filenames used in ReactAgent
+    - Exact match if present
+    - Basename-insensitive lookup among files_dict keys
+    """
+    if not file_path:
+        return file_path
+
+    # Direct exact match
+    if file_path in files_dict:
+        return file_path
+
+    # Map known context basenames
+    lower = file_path.lower()
+    if lower.endswith("/context/tender_summary.md") or lower.endswith("tender_summary.md"):
+        candidate = "/workspace/context/tender_summary.md"
+        if candidate in files_dict:
+            return candidate
+    if lower.endswith("/context/file_index.json") or lower.endswith("file_index.json"):
+        candidate = "/workspace/context/file_index.json"
+        if candidate in files_dict:
+            return candidate
+    if lower.endswith("/context/cluster_id.txt") or lower.endswith("cluster_id.txt"):
+        candidate = "/workspace/context/cluster_id.txt"
+        if candidate in files_dict:
+            return candidate
+    if lower.endswith("/context/supplier_profile.md") or lower.endswith("supplier_profile.md"):
+        candidate = "/workspace/context/supplier_profile.md"
+        if candidate in files_dict:
+            return candidate
+
+    # Basename-insensitive match
+    import os
+
+    base = os.path.basename(file_path).lower()
+    for key in files_dict.keys():
+        if os.path.basename(key).lower() == base:
+            return key
+
+    return file_path
+
 @tool(description=WRITE_TODOS_TOOL_DESCRIPTION)
 @log_tool_call
 def write_todos(
-    todos: list[Todo], tool_call_id: Annotated[str, InjectedToolCallId]
+    todos: list[Todo], 
+    tool_call_id: Annotated[str, InjectedToolCallId, InjectedToolArg]
 ) -> Command:
+    # Emit plan event for streaming
+    try:
+        from api.streaming.emitter import get_current_emitter
+        import asyncio
+        
+        emitter = get_current_emitter()
+        if emitter:
+            # Convert todos to plan items
+            plan_items = []
+            for todo in todos:
+                plan_items.append({
+                    "id": todo.id,
+                    "text": todo.content,
+                    "status": todo.status
+                })
+            
+            # Schedule emit in current event loop
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(emitter.emit_plan(plan_items))
+            except RuntimeError:
+                pass  # No running loop
+    except Exception:
+        pass  # Don't break tool execution if streaming fails
+    
     return Command(
         update={
             "todos": todos,
@@ -26,25 +118,37 @@ def write_todos(
         }
     )
 
+# Apply schema fix to remove injected params from validation
+write_todos = _fix_injected_params_schema(write_todos)
+
+
 @tool(description=LIST_FILES_TOOL_DESCRIPTION)
 @log_tool_call
-def ls(state: FilesystemState) -> list[str]:
+def ls(
+    state: Annotated[FilesystemState, InjectedState, InjectedToolArg] = None,
+) -> list[str]:
     """List all files"""
-    return list(state.get("files", {}).keys())
+    files = state.get("files", {}) if state else {}
+    return list(files.keys())
+
+# Apply schema fix to remove injected params from validation
+ls = _fix_injected_params_schema(ls)
+
 
 @tool(description=READ_FILE_TOOL_DESCRIPTION)
 @log_tool_call
 def read_file(
     file_path: str,
-    state: FilesystemState,
+    state: Annotated[FilesystemState, InjectedState, InjectedToolArg] = None,
     offset: int = 0,
     limit: int = 2000,
 ) -> str:
-    mock_filesystem = state.get("files", {})
-    if file_path not in mock_filesystem:
+    mock_filesystem = state.get("files", {}) if state else {}
+    normalized = _normalize_path(file_path, mock_filesystem)
+    if normalized not in mock_filesystem:
         return f"Error: File '{file_path}' not found"
 
-    content = mock_filesystem[file_path]
+    content = mock_filesystem[normalized]
 
     if not content or content.strip() == "":
         return "System reminder: File exists but has empty contents"
@@ -69,24 +173,45 @@ def read_file(
 
     return "\n".join(result_lines)
 
+# Apply schema fix to remove injected params from validation
+read_file = _fix_injected_params_schema(read_file)
+
+
 @tool(description=WRITE_FILE_TOOL_DESCRIPTION)
 @log_tool_call
 def write_file(
     file_path: str,
-    content: str,
-    state: FilesystemState,
-    tool_call_id: Annotated[str, InjectedToolCallId],
-) -> Command:
-    files = state.get("files", {})
-    files[file_path] = content
+    content: Optional[str] = None,
+    state: Annotated[FilesystemState, InjectedState, InjectedToolArg] = None,
+    tool_call_id: Annotated[str, InjectedToolCallId, InjectedToolArg] = "",
+) -> Union[Command, str]:
+    """Write content to a file in the virtual filesystem.
+
+    Notes:
+    - content is optional in schema to avoid pydantic hard-fail; we validate manually
+    - on missing content, return a concise error string (no state echo), no state update
+    """
+    if content is None:
+        return (
+            "Error: write_file requires a 'content' string. Call as write_file(file_path=..., content=...)"
+        )
+
+    files = state.get("files", {}) if state else {}
+    # Keep writes on exact given path; if caller used a known context basename, normalize
+    target_path = _normalize_path(file_path, files)
+    files[target_path] = content
     return Command(
         update={
             "files": files,
             "messages": [
-                ToolMessage(f"Updated file {file_path}", tool_call_id=tool_call_id)
+                ToolMessage(f"Updated file {target_path}", tool_call_id=tool_call_id)
             ],
         }
     )
+
+# Apply schema fix to remove injected params from validation
+write_file = _fix_injected_params_schema(write_file)
+
 
 @tool(description=EDIT_FILE_TOOL_DESCRIPTION)
 @log_tool_call
@@ -94,16 +219,17 @@ def edit_file(
     file_path: str,
     old_string: str,
     new_string: str,
-    state: FilesystemState,
-    tool_call_id: Annotated[str, InjectedToolCallId],
+    state: Annotated[FilesystemState, InjectedState, InjectedToolArg] = None,
+    tool_call_id: Annotated[str, InjectedToolCallId, InjectedToolArg] = "",
     replace_all: bool = False,
 ) -> Union[Command, str]:
     """Write to a file."""
-    mock_filesystem = state.get("files", {})
-    if file_path not in mock_filesystem:
+    mock_filesystem = state.get("files", {}) if state else {}
+    normalized = _normalize_path(file_path, mock_filesystem)
+    if normalized not in mock_filesystem:
         return f"Error: File '{file_path}' not found"
 
-    content = mock_filesystem[file_path]
+    content = mock_filesystem[normalized]
 
     if old_string not in content:
         return f"Error: String not found in file: '{old_string}'"
@@ -125,10 +251,13 @@ def edit_file(
         )
         result_msg = f"Successfully replaced string in '{file_path}'"
 
-    mock_filesystem[file_path] = new_content
+    mock_filesystem[normalized] = new_content
     return Command(
         update={
             "files": mock_filesystem,
             "messages": [ToolMessage(result_msg, tool_call_id=tool_call_id)],
         }
     )
+
+# Apply schema fix to remove injected params from validation
+edit_file = _fix_injected_params_schema(edit_file)

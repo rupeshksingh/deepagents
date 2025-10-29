@@ -369,7 +369,13 @@ def get_proposal_files_summary(client: MongoClient, tender_id: str, org_id: int 
                 "file_id": doc.get("_id"),
                 "file_name": doc.get("file_name"),
                 "document_type": doc.get("file_extension"),
-                "summary": doc.get("requirements_summary", {}).get("en") if doc.get("requirements_summary", {}).get("en") else list(doc.get("requirements_summary", {}).values())[0]
+                # Use agent_summary (lean, 100-400 words) instead of requirements_summary (detailed)
+                # Falls back to requirements_summary if agent_summary not generated yet
+                "summary": doc.get("agent_summary") or (
+                    doc.get("requirements_summary", {}).get("en") 
+                    if doc.get("requirements_summary", {}).get("en") 
+                    else (list(doc.get("requirements_summary", {}).values())[0] if doc.get("requirements_summary", {}) else "No summary available")
+                )
             }
             for doc in files
         ]

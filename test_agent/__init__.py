@@ -10,9 +10,9 @@ import time
 from datetime import datetime
 from typing import Dict, Any
 
-from test_chat import run_comprehensive_tests
-from test_memory import run_memory_tests
-from test_streaming import run_streaming_tests
+from .test_chat import run_comprehensive_tests
+from .test_memory import run_memory_tests
+from .test_streaming import run_streaming_tests
 from src.deepagents.logging_utils import get_tool_call_stats
 from pymongo import MongoClient
 

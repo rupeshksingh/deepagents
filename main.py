@@ -14,9 +14,10 @@ from fastapi.responses import JSONResponse
 from pymongo import MongoClient
 import uvicorn
 
-from api.router import create_api_router
+from api.streaming_router import create_streaming_router
 from api.models import ApiInfoResponse, HealthResponse
 from api.store import ApiStore
+from api.task_queue import get_task_queue
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,7 +29,7 @@ env = os.getenv("ENV", "dev")
 dotenv_file = f".env.{env}"
 load_dotenv(dotenv_file)
 
-os.environ["LANGCHAIN_TRACING_V2"] = os.getenv("LANGCHAIN_TRACING_V2", "false")
+os.environ["LANGCHAIN_TRACING_V2"] = os.getenv("LANGCHAIN_TRACING_V2", "true")
 os.environ["LANGCHAIN_PROJECT"] = os.getenv("LANGCHAIN_PROJECT", "")
 os.environ["LANGCHAIN_API_KEY"] = os.getenv("LANGCHAIN_API_KEY", "")
 os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
@@ -90,11 +91,13 @@ except Exception as e:
 
 if mongo_client:
     try:
-        api_router = create_api_router(mongo_client, db_name="proposal_assistant")
-        app.include_router(api_router)
-        logger.info("API router registered successfully")
+        # Register streaming API router
+        # Using org_1 database (org-wise convention)
+        streaming_router = create_streaming_router(mongo_client, db_name="org_1")
+        app.include_router(streaming_router)
+        logger.info("Streaming API router registered successfully")
     except Exception as e:
-        logger.error(f"Failed to register API router: {e}")
+        logger.error(f"Failed to register streaming router: {e}")
         mongodb_status = "error"
 else:
     logger.warning("API endpoints not available due to MongoDB connection failure")
@@ -223,6 +226,7 @@ async def startup_event():
     """
     Application startup event handler.
     Logs startup information and verifies connections.
+    Resets stale tasks from previous crashes.
     """
     logger.info("=" * 60)
     logger.info("Starting Proposal Assistant API v2.0.0")
@@ -232,6 +236,15 @@ async def startup_event():
         logger.info("✓ MongoDB connection: OK")
         logger.info("✓ API endpoints: Registered")
         logger.info("✓ Agent service: Ready")
+        
+        # Reset stale tasks (recover from crashes)
+        try:
+            task_queue = get_task_queue(mongo_client, db_name="org_1")
+            reset_count = task_queue.reset_stale_tasks()
+            if reset_count > 0:
+                logger.info(f"✓ Recovered {reset_count} stale tasks from previous session")
+        except Exception as e:
+            logger.warning(f"Failed to reset stale tasks: {e}")
     else:
         logger.warning("✗ MongoDB connection: FAILED")
         logger.warning("✗ API endpoints: Not available")

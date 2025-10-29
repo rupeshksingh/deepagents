@@ -8,16 +8,6 @@ from typing import Dict, Any
 from bson import ObjectId
 
 
-def generate_chat_id() -> str:
-    """
-    Generate a unique chat ID using UUID4.
-    
-    Returns:
-        str: A UUID string to be used as chat_id
-    """
-    return str(uuid.uuid4())
-
-
 def generate_thread_id(chat_id: str) -> str:
     """
     Generate a LangGraph thread ID from chat_id.
@@ -64,6 +54,19 @@ def validate_uuid(uuid_str: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def validate_chat_id(chat_id: str) -> bool:
+    """
+    Validate if a string is a valid chat ID (ObjectId).
+    
+    Args:
+        chat_id: String to validate
+        
+    Returns:
+        bool: True if valid ObjectId format, False otherwise
+    """
+    return validate_object_id(chat_id)
 
 
 def calculate_pagination(

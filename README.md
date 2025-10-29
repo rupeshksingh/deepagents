@@ -150,7 +150,7 @@ from langchain.agents import create_agent
 custom_graph = create_agent(
     model=your_model,
     tools=specialized_tools,
-    prompt="You are a specialized agent for data analysis..."
+    system_prompt="You are a specialized agent for data analysis..."
 )
 
 # Use it as a custom subagent

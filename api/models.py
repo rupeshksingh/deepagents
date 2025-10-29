@@ -23,6 +23,7 @@ class MessageStatus(str, Enum):
     """Status of message processing"""
     PENDING = "pending"
     PROCESSING = "processing"
+    INTERRUPTED = "interrupted"  # HITL interrupt waiting for human input
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -62,6 +63,20 @@ class MessageCreateRequest(BaseModel):
     )
 
 
+class MessageCreateResponse(BaseModel):
+    """Response model for message creation (MVP streaming API)"""
+    message_id: str = Field(..., description="Created message ID")
+    stream_url: str = Field(..., description="URL to open SSE stream")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "message_id": "670abc123def456789012345",
+                "stream_url": "/api/chats/550e8400-e29b-41d4-a716-446655440000/messages/670abc123def456789012345/stream"
+            }
+        }
+
+
 # ============================================================================
 # Response Models
 # ============================================================================
@@ -88,7 +103,7 @@ class UserResponse(BaseModel):
 
 class ChatResponse(BaseModel):
     """Response model for chat information"""
-    chat_id: str = Field(..., description="Unique chat identifier (UUID)")
+    chat_id: str = Field(..., description="Unique chat identifier (MongoDB ObjectId)")
     user_id: str = Field(..., description="Owner user ID")
     title: str = Field(..., description="Chat title")
     created_at: datetime = Field(..., description="Chat creation timestamp")
