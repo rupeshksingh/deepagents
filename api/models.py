@@ -23,6 +23,7 @@ class MessageStatus(str, Enum):
     """Status of message processing"""
     PENDING = "pending"
     PROCESSING = "processing"
+    INTERRUPTED = "interrupted"  # HITL interrupt waiting for human input
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -102,7 +103,7 @@ class UserResponse(BaseModel):
 
 class ChatResponse(BaseModel):
     """Response model for chat information"""
-    chat_id: str = Field(..., description="Unique chat identifier (UUID)")
+    chat_id: str = Field(..., description="Unique chat identifier (MongoDB ObjectId)")
     user_id: str = Field(..., description="Owner user ID")
     title: str = Field(..., description="Chat title")
     created_at: datetime = Field(..., description="Chat creation timestamp")

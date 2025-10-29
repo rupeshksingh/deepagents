@@ -12,6 +12,8 @@ Handles:
 import asyncio
 import json
 import logging
+import os
+import time
 from datetime import datetime, timezone
 from typing import AsyncGenerator, Dict, Any, Optional
 
@@ -23,9 +25,12 @@ from api.streaming.emitter import StreamingEventEmitter, set_current_emitter
 from api.streaming.events import StreamEvent, create_status_event, create_end_event
 from api.streaming.persistence import EventPersistence
 from api.utils import generate_thread_id
-from api.background_agent_registry import get_agent_registry
 
 logger = logging.getLogger(__name__)
+
+# Privacy toggle: control THINKING event emission
+# Set EMIT_THINKING=1 to enable raw AI reasoning in production
+EMIT_THINKING = "1"
 
 
 class RobustEventWriter:
@@ -125,8 +130,8 @@ async def stream_agent_response(
     Yields:
         StreamEvent: Events as they occur
     """
-    # Create event emitter for this request
-    emitter = StreamingEventEmitter(message_id, chat_id)
+    # Create event emitter for this request (inject persistence for fallback)
+    emitter = StreamingEventEmitter(message_id, chat_id, persistence=event_persistence)
     set_current_emitter(emitter)
     emitter.start()
     
@@ -205,6 +210,7 @@ User Query: {user_content}"""
         initial_state: Dict[str, Any] = {
             "messages": messages,
             "files": context_files,  # Always set, even if empty dict
+            "thread_id": thread_id,  # Provide thread_id for middlewares that can't read runtime.config
         }
         if tender_id and context_files:
             # Also store cluster_id at top-level for tools to access without file read
@@ -278,7 +284,7 @@ User Query: {user_content}"""
                                 thinking_text = str(content).strip()
                             
                             # Only emit if there's actual text content
-                            if thinking_text:
+                            if thinking_text and EMIT_THINKING:
                                 # Check if this is just tool calls without reasoning
                                 has_tool_calls = hasattr(last_message, 'tool_calls') and last_message.tool_calls
                                 
@@ -401,7 +407,7 @@ User Query: {user_content}"""
             from api.models import MessageStatus
             store.update_message_status(
                 message_id,
-                MessageStatus.PROCESSING,
+                MessageStatus.INTERRUPTED,
                 metadata={
                     "interrupted": True,
                     "interrupt_question": question,
@@ -506,6 +512,11 @@ User Query: {user_content}"""
             f"Streaming completed for message {message_id}: "
             f"{processing_time_ms}ms, {tool_call_count} tool calls"
         )
+        
+        # Trigger async summarization (non-blocking) after successful stream completion
+        # This ensures summaries are generated in production streaming path
+        if not interrupt_detected:
+            agent._schedule_summarization(thread_id, config)
         
         # Increment message count after successful response
         if tender_id:
@@ -643,6 +654,7 @@ User Query: {user_content}"""
         initial_state: Dict[str, Any] = {
             "messages": messages,
             "files": context_files,
+            "thread_id": thread_id,  # Provide thread_id for middlewares that can't read runtime.config
         }
         if tender_id and context_files:
             initial_state["cluster_id"] = context_files.get(
@@ -657,7 +669,8 @@ User Query: {user_content}"""
         last_chunk = None
         
         # Create an event emitter so tool_start/tool_end and other events are captured by middleware
-        emitter = StreamingEventEmitter(message_id, chat_id)
+        # Inject persistence for fallback writes
+        emitter = StreamingEventEmitter(message_id, chat_id, persistence=event_persistence)
         set_current_emitter(emitter)
         emitter.start()
 
@@ -707,7 +720,7 @@ User Query: {user_content}"""
                         else:
                             thinking_text = str(content).strip()
                         
-                        if thinking_text:
+                        if thinking_text and EMIT_THINKING:
                             has_tool_calls = hasattr(last_message, 'tool_calls') and last_message.tool_calls
                             if not has_tool_calls or thinking_text:
                                 try:
@@ -743,7 +756,8 @@ User Query: {user_content}"""
             if (now - last_heartbeat_check).total_seconds() >= 15:
                 try:
                     elapsed = int((now - start_time).total_seconds())
-                    await event_writer.write_event(create_status_event(f"Processing... ({elapsed}s elapsed)"))
+                    heartbeat_id = f"heartbeat_{message_id}_{int(time.time() * 1000)}"
+                    await event_writer.write_event(create_status_event(heartbeat_id, f"Processing... ({elapsed}s elapsed)"))
                 except Exception:
                     pass
                 last_heartbeat_check = now
@@ -776,10 +790,10 @@ User Query: {user_content}"""
             )
             await event_writer.write_event(status_event)
             
-            # Update message status
+            # Update message status to INTERRUPTED
             store.update_message_status(
                 message_id,
-                MessageStatus.PROCESSING,
+                MessageStatus.INTERRUPTED,
                 metadata={
                     "interrupted": True,
                     "interrupt_question": question,
@@ -927,6 +941,247 @@ User Query: {user_content}"""
             set_current_emitter(None)
         except Exception:
             pass
+async def execute_resume_pure(
+    store: ApiStore,
+    event_persistence: EventPersistence,
+    chat_id: str,
+    message_id: str,
+    thread_id: str,
+    resume_command,
+    metadata: Dict[str, Any]
+) -> None:
+    """
+    Execute agent resume as a pure async function with event persistence.
+    
+    Similar to execute_agent_pure but for resuming interrupted agents.
+    Persists all continuation events so SSE watchers see progress.
+    
+    Args:
+        store: API store
+        event_persistence: Event persistence layer
+        chat_id: Chat ID
+        message_id: Assistant message ID (interrupted)
+        thread_id: Thread ID for checkpointer
+        resume_command: LangGraph Command(resume=[...])
+        metadata: Message metadata
+    """
+    event_writer = RobustEventWriter(event_persistence, message_id, chat_id)
+    start_time = datetime.now(timezone.utc)
+    full_response = ""
+    tool_call_count = 0
+    emitter: Optional[StreamingEventEmitter] = None
+    
+    try:
+        # Update message status to PROCESSING (resuming)
+        from api.models import MessageStatus
+        store.update_message_status(
+            message_id,
+            MessageStatus.PROCESSING,
+            metadata={**metadata, "resuming": True}
+        )
+        
+        # Emit RESUME START event
+        from api.streaming.events import StreamEvent, EventType
+        resume_start_event = StreamEvent(
+            type=EventType.STATUS,
+            id=f"resume_start_{message_id}",
+            ts=datetime.now(timezone.utc).isoformat(),
+            text="🔄 Resuming from interrupt..."
+        )
+        await event_writer.write_event(resume_start_event)
+        
+        logger.info(f"Resume execution started for message {message_id}")
+        
+        # Get agent instance
+        agent = store._get_agent()
+        config = {"configurable": {"thread_id": thread_id}}
+        
+        # Create emitter for tool events during resume (inject persistence for fallback)
+        emitter = StreamingEventEmitter(message_id, chat_id, persistence=event_persistence)
+        set_current_emitter(emitter)
+        emitter.start()
+        
+        # Track state
+        seen_message_ids = set()
+        last_chunk = None
+        last_heartbeat_check = datetime.now(timezone.utc)
+        
+        # Resume agent with command
+        agent_stream = agent.agent.astream(
+            resume_command,
+            config=config,
+            stream_mode="values"
+        )
+        
+        # Process continuation stream
+        async for chunk in agent_stream:
+            last_chunk = chunk
+            
+            # Capture AI messages as THINKING events
+            if "messages" in chunk and chunk["messages"]:
+                last_message = chunk["messages"][-1]
+                
+                if isinstance(last_message, AIMessage):
+                    msg_id = getattr(last_message, 'id', None)
+                    content = last_message.content
+                    
+                    if content and msg_id not in seen_message_ids:
+                        if isinstance(content, list):
+                            text_parts = []
+                            for block in content:
+                                if isinstance(block, dict):
+                                    if block.get("type") == "text":
+                                        text_parts.append(block.get("text", ""))
+                                elif hasattr(block, 'text'):
+                                    text_parts.append(block.text)
+                                else:
+                                    text_parts.append(str(block))
+                            thinking_text = " ".join(text_parts).strip()
+                        else:
+                            thinking_text = str(content).strip()
+                        
+                        if thinking_text and EMIT_THINKING:
+                            has_tool_calls = hasattr(last_message, 'tool_calls') and last_message.tool_calls
+                            if not has_tool_calls or thinking_text:
+                                try:
+                                    await emitter.emit_thinking(thinking_text)
+                                except Exception:
+                                    from api.streaming.events import create_thinking_event
+                                    await event_writer.write_event(
+                                        create_thinking_event(
+                                            f"think_resume_{message_id}_{len(seen_message_ids)}",
+                                            thinking_text
+                                        )
+                                    )
+                                if msg_id:
+                                    seen_message_ids.add(msg_id)
+            
+            # Drain emitter queue and persist events
+            while True:
+                evt = await emitter.get_next(timeout=0.01)
+                if not evt:
+                    break
+                await event_writer.write_event(evt)
+                try:
+                    from api.streaming.events import EventType
+                    if evt.type == EventType.TOOL_END or getattr(evt.type, "value", None) == "tool_end":
+                        tool_call_count += 1
+                except Exception:
+                    pass
+            
+            # Heartbeats
+            now = datetime.now(timezone.utc)
+            if (now - last_heartbeat_check).total_seconds() >= 15:
+                try:
+                    elapsed = int((now - start_time).total_seconds())
+                    heartbeat_id = f"heartbeat_resume_{message_id}_{int(time.time() * 1000)}"
+                    await event_writer.write_event(create_status_event(heartbeat_id, f"Resuming... ({elapsed}s elapsed)"))
+                except Exception:
+                    pass
+                last_heartbeat_check = now
+        
+        # Extract final response
+        if last_chunk and "messages" in last_chunk and last_chunk["messages"]:
+            last_message = last_chunk["messages"][-1]
+            if isinstance(last_message, AIMessage):
+                content = last_message.content
+                if isinstance(content, list):
+                    final_response = " ".join([
+                        block.get("text", "") if isinstance(block, dict) else str(block)
+                        for block in content
+                    ])
+                else:
+                    final_response = str(content)
+                
+                if final_response:
+                    full_response = final_response
+                    
+                    # Emit CONTENT events
+                    from api.streaming.events import create_content_start_event, create_content_event, create_content_end_event
+                    
+                    await event_writer.write_event(
+                        create_content_start_event(f"content_start_resume_{message_id}")
+                    )
+                    
+                    words = final_response.split()
+                    chunk_size = 10
+                    for i in range(0, len(words), chunk_size):
+                        chunk_text = " ".join(words[i:i+chunk_size])
+                        content_event = create_content_event(
+                            f"content_resume_{message_id}_{i}",
+                            chunk_text
+                        )
+                        await event_writer.write_event(content_event)
+                    
+                    await event_writer.write_event(
+                        create_content_end_event(f"content_end_resume_{message_id}")
+                    )
+        
+        # Drain remaining events
+        if emitter:
+            while True:
+                evt = await emitter.get_next(timeout=0.05)
+                if not evt:
+                    break
+                await event_writer.write_event(evt)
+        
+        # Emit END event
+        processing_time_ms = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
+        end_event = create_end_event(
+            f"end_resume_{message_id}",
+            "completed",
+            processing_time_ms,
+            tool_call_count
+        )
+        await event_writer.write_event(end_event)
+        
+        # Update message with final response
+        store.update_message_status(
+            message_id,
+            MessageStatus.COMPLETED,
+            content=full_response,
+            processing_time_ms=processing_time_ms,
+            metadata={**metadata, "resumed": True, "interrupted": False}
+        )
+        
+        await event_writer.flush_failed_events()
+        
+        logger.info(
+            f"Resume execution completed for message {message_id}: "
+            f"{processing_time_ms}ms, {tool_call_count} tool calls"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in execute_resume_pure for message {message_id}: {e}", exc_info=True)
+        
+        from api.streaming.events import create_error_event
+        error_event = create_error_event(f"error_resume_{message_id}", str(e))
+        await event_writer.write_event(error_event)
+        
+        from api.models import MessageStatus
+        store.update_message_status(
+            message_id,
+            MessageStatus.FAILED,
+            error=str(e)
+        )
+        
+        try:
+            await event_writer.flush_failed_events()
+        except Exception:
+            pass
+    
+    finally:
+        try:
+            if emitter:
+                emitter.stop()
+        except Exception:
+            pass
+        try:
+            set_current_emitter(None)
+        except Exception:
+            pass
+
+
 async def run_agent_background(
     store: ApiStore,
     event_persistence: EventPersistence,
@@ -973,6 +1228,8 @@ async def run_agent_background(
 
 async def watch_agent_stream(
     event_persistence: EventPersistence,
+    store,
+    task_queue,
     chat_id: str,
     message_id: str,
     since_id: Optional[str] = None,
@@ -984,12 +1241,15 @@ async def watch_agent_stream(
     
     This function:
     - Replays historical events
-    - Polls for new events while agent is running  
-    - Stops when agent completes
+    - Polls for new events while task is running  
+    - Stops when task completes (END event or terminal message status)
     - Multiple clients can watch same agent
+    - Purely reads from MongoDB (no in-memory state)
     
     Args:
         event_persistence: Event persistence layer
+        store: API store for message status checks
+        task_queue: Task queue for status checks
         chat_id: Chat ID
         message_id: Message ID to watch
         since_id: Event ID to start from (for reconnect)
@@ -1000,8 +1260,8 @@ async def watch_agent_stream(
         StreamEvent: Events as they're found in persistence
     """
     from api.streaming.events import EventType
+    from api.models import MessageStatus
     
-    registry = get_agent_registry()
     start_time = datetime.now(timezone.utc)
     last_event_id = since_id
     seen_event_ids = set()
@@ -1011,9 +1271,6 @@ async def watch_agent_stream(
     
     try:
         while True:
-            # Check if agent is still running
-            is_running = await registry.is_running(message_id)
-            
             # Get new events from persistence
             events = event_persistence.get_events(
                 message_id=message_id,
@@ -1052,38 +1309,42 @@ async def watch_agent_stream(
                     logger.info(f"Agent {message_id} completed (END event received)")
                     return
             
-            # If agent not running and we got the END event, we're done
-            if agent_completed or (not is_running and last_event_id):
-                # Wait a bit more to catch any final events
-                await asyncio.sleep(poll_interval)
+            # Check if task/message is in terminal state
+            # This handles cases where END event might not be persisted yet
+            if agent_completed or last_event_id:
+                # Check message status in DB
+                message = store.get_message(message_id)
+                if message and message.status in {MessageStatus.COMPLETED, MessageStatus.FAILED, MessageStatus.INTERRUPTED}:
+                    # Wait a bit more to catch any final events
+                    await asyncio.sleep(poll_interval)
                 
-                # One more check for events
-                final_events = event_persistence.get_events(
-                    message_id=message_id,
-                    since_id=last_event_id,
-                    limit=100
-                )
-                
-                for event_dict in final_events:
-                    event_id = event_dict.get("id")
-                    if event_id not in seen_event_ids:
-                        seen_event_ids.add(event_id)
-                        
-                        # Convert datetime back to ISO string if needed
-                        if "ts" in event_dict and hasattr(event_dict["ts"], "isoformat"):
-                            event_dict["ts"] = event_dict["ts"].isoformat()
-                        
-                        # Remove MongoDB fields
-                        event_dict.pop("_id", None)
-                        event_dict.pop("message_id", None)
-                        event_dict.pop("chat_id", None)
-                        event_dict.pop("seq", None)
-                        
-                        event = StreamEvent(**event_dict)
-                        yield event
-                
-                logger.info(f"Agent {message_id} completed, watcher stopping")
-                return
+                    # One more check for events
+                    final_events = event_persistence.get_events(
+                        message_id=message_id,
+                        since_id=last_event_id,
+                        limit=100
+                    )
+                    
+                    for event_dict in final_events:
+                        event_id = event_dict.get("id")
+                        if event_id not in seen_event_ids:
+                            seen_event_ids.add(event_id)
+                            
+                            # Convert datetime back to ISO string if needed
+                            if "ts" in event_dict and hasattr(event_dict["ts"], "isoformat"):
+                                event_dict["ts"] = event_dict["ts"].isoformat()
+                            
+                            # Remove MongoDB fields
+                            event_dict.pop("_id", None)
+                            event_dict.pop("message_id", None)
+                            event_dict.pop("chat_id", None)
+                            event_dict.pop("seq", None)
+                            
+                            event = StreamEvent(**event_dict)
+                            yield event
+                    
+                    logger.info(f"Agent {message_id} completed, watcher stopping")
+                    return
             
             # Check timeout
             elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()

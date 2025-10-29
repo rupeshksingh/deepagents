@@ -23,11 +23,10 @@ from api.models import (
     StreamChunkType
 )
 from api.utils import (
-    generate_chat_id,
     generate_thread_id,
     calculate_pagination,
     validate_object_id,
-    validate_uuid
+    validate_chat_id
 )
 from react_agent import ReactAgent
 
@@ -51,9 +50,10 @@ class ApiStore:
         self.client = client
         self.db = client[db_name]
 
-        self.users_collection = self.db["proposal_assistant_users"]
-        self.chats_collection = self.db["proposal_assistant_chat"]
-        self.messages_collection = self.db["proposal_assistant_messages"]
+        # Collection names with PA (Proposal Assistant) prefix
+        self.users_collection = self.db["pa_users"]
+        self.chats_collection = self.db["pa_chats"]
+        self.messages_collection = self.db["pa_messages"]
         
         self.agent = None
         
@@ -85,8 +85,9 @@ class ApiStore:
             ReactAgent: The agent instance
         """
         if self.agent is None:
-            self.agent = ReactAgent(self.client, org_id=1)
-            logger.info("ReactAgent instance created")
+            # Production: enable HITL interrupts for human-in-the-loop interactions
+            self.agent = ReactAgent(self.client, org_id=1, enable_hitl=True)
+            logger.info("ReactAgent instance created (HITL enabled)")
         return self.agent
     
     # ========================================================================
@@ -165,6 +166,8 @@ class ApiStore:
         """
         Create a new chat for a user.
         
+        Uses MongoDB insertion ObjectId as chat_id for cleaner ID management.
+        
         Args:
             user_id: The user identifier
             request: Chat creation request
@@ -174,12 +177,10 @@ class ApiStore:
         """
         try:
             current_time = datetime.now(timezone.utc).replace(tzinfo=None)
-            chat_id = generate_chat_id()
             
             title = request.title or f"Chat - {current_time.strftime('%Y-%m-%d %H:%M')}"
             
             chat_doc = {
-                "chat_id": chat_id,
                 "user_id": user_id,
                 "title": title,
                 "created_at": current_time,
@@ -187,18 +188,27 @@ class ApiStore:
                 "message_count": 0
             }
             
-            self.chats_collection.insert_one(chat_doc)
+            # Insert and use insertion ObjectId as chat_id
+            result = self.chats_collection.insert_one(chat_doc)
+            chat_id = str(result.inserted_id)
+            
+            # Update document with chat_id field for existing query compatibility
+            self.chats_collection.update_one(
+                {"_id": result.inserted_id},
+                {"$set": {"chat_id": chat_id}}
+            )
+            
             logger.info(f"Created new chat: {chat_id} for user: {user_id}")
             
             self.update_user_activity(user_id)
             
             return ChatResponse(
-                chat_id=chat_doc["chat_id"],
-                user_id=chat_doc["user_id"],
-                title=chat_doc["title"],
-                created_at=chat_doc["created_at"],
-                updated_at=chat_doc["updated_at"],
-                message_count=chat_doc["message_count"]
+                chat_id=chat_id,
+                user_id=user_id,
+                title=title,
+                created_at=current_time,
+                updated_at=current_time,
+                message_count=0
             )
             
         except Exception as e:
@@ -210,13 +220,13 @@ class ApiStore:
         Get a chat by ID.
         
         Args:
-            chat_id: The chat identifier
+            chat_id: The chat identifier (MongoDB ObjectId string)
             
         Returns:
             ChatResponse: Chat information, or None if not found
         """
         try:
-            if not validate_uuid(chat_id):
+            if not validate_chat_id(chat_id):
                 logger.warning(f"Invalid chat_id format: {chat_id}")
                 return None
             
@@ -294,13 +304,13 @@ class ApiStore:
         Delete a chat and all its messages.
         
         Args:
-            chat_id: The chat identifier
+            chat_id: The chat identifier (MongoDB ObjectId string)
             
         Returns:
             bool: True if deleted, False if not found
         """
         try:
-            if not validate_uuid(chat_id):
+            if not validate_chat_id(chat_id):
                 logger.warning(f"Invalid chat_id format: {chat_id}")
                 return False
             
@@ -549,144 +559,14 @@ class ApiStore:
             logger.error(f"Error updating message status: {str(e)}")
     
     # ========================================================================
-    # Streaming Message Processing
+    # Streaming Message Processing - DEPRECATED
     # ========================================================================
-    
-    async def stream_message(
-        self,
-        chat_id: str,
-        user_id: str,
-        request: MessageCreateRequest
-    ) -> AsyncGenerator[StreamChunkResponse, None]:
-        """
-        Process a user message and stream the assistant's response.
-        
-        Args:
-            chat_id: The chat identifier
-            user_id: The user identifier
-            request: Message creation request
-            
-        Yields:
-            StreamChunkResponse: Streaming chunks
-        """
-        try:
-            user_message = self.create_message(
-                chat_id=chat_id,
-                user_id=user_id,
-                role=MessageRole.USER,
-                content=request.content,
-                metadata=request.metadata
-            )
-            
-            assistant_message = self.create_message(
-                chat_id=chat_id,
-                user_id=user_id,
-                role=MessageRole.ASSISTANT,
-                content="",
-                metadata=request.metadata
-            )
-            
-            self.update_message_status(
-                assistant_message.message_id,
-                MessageStatus.PROCESSING
-            )
-            
-            yield StreamChunkResponse(
-                message_id=assistant_message.message_id,
-                chat_id=chat_id,
-                chunk_type=StreamChunkType.START,
-                status=MessageStatus.PROCESSING
-            )
-            
-            agent = self._get_agent()
-            thread_id = generate_thread_id(chat_id)
-            
-            full_response = ""
-            start_time = datetime.now()
-            
-            try:
-                async for chunk in agent.chat_streaming(
-                    user_query=request.content,
-                    thread_id=thread_id,
-                    tender_id=request.metadata.get("tender_id") if request.metadata else None,
-                user_id=user_id
-                ):
-                    if chunk["chunk_type"] == "content":
-                        content = chunk.get("content", "")
-                        full_response += content + " "
-                        
-                        yield StreamChunkResponse(
-                            message_id=assistant_message.message_id,
-                            chat_id=chat_id,
-                            chunk_type=StreamChunkType.CONTENT,
-                            content=content
-                        )
-                    
-                    elif chunk["chunk_type"] == "end":
-                        end_time = datetime.now()
-                        processing_time_ms = int((end_time - start_time).total_seconds() * 1000)
-                        
-                        final_response = chunk.get("total_response", full_response.strip())
-                        
-                        self.update_message_status(
-                            assistant_message.message_id,
-                            MessageStatus.COMPLETED,
-                            content=final_response,
-                            processing_time_ms=processing_time_ms
-                        )
-                        
-                        yield StreamChunkResponse(
-                            message_id=assistant_message.message_id,
-                            chat_id=chat_id,
-                            chunk_type=StreamChunkType.END,
-                            status=MessageStatus.COMPLETED,
-                            processing_time_ms=processing_time_ms
-                        )
-                    
-                    elif chunk["chunk_type"] == "error":
-                        error_msg = chunk.get("content", "Unknown error")
-                        
-                        self.update_message_status(
-                            assistant_message.message_id,
-                            MessageStatus.FAILED,
-                            error=error_msg
-                        )
-                        
-                        yield StreamChunkResponse(
-                            message_id=assistant_message.message_id,
-                            chat_id=chat_id,
-                            chunk_type=StreamChunkType.ERROR,
-                            status=MessageStatus.FAILED,
-                            error=error_msg
-                        )
-                        return
-            
-            except Exception as e:
-                error_msg = f"Agent processing error: {str(e)}"
-                logger.error(error_msg)
-                
-                self.update_message_status(
-                    assistant_message.message_id,
-                    MessageStatus.FAILED,
-                    error=error_msg
-                )
-                
-                yield StreamChunkResponse(
-                    message_id=assistant_message.message_id,
-                    chat_id=chat_id,
-                    chunk_type=StreamChunkType.ERROR,
-                    status=MessageStatus.FAILED,
-                    error=error_msg
-                )
-            
-        except Exception as e:
-            error_msg = f"Stream processing error: {str(e)}"
-            logger.error(error_msg)
-            
-            yield StreamChunkResponse(
-                message_id="",
-                chat_id=chat_id,
-                chunk_type=StreamChunkType.ERROR,
-                status=MessageStatus.FAILED,
-                error=error_msg
-            )
+    # 
+    # NOTE: stream_message() method removed (called deleted ReactAgent.chat_streaming)
+    # 
+    # Production streaming uses: api/streaming_store.py
+    # - StreamingApiRouter.send_message() creates message + returns stream URL
+    # - StreamingApiRouter.stream_message() serves SSE via agent.agent.astream()
+    # - Includes: HITL interrupt detection, event persistence, background summarization
+    # 
+    # All streaming paths now unified under api/streaming_router.py + api/streaming_store.py

@@ -23,7 +23,6 @@ class EventType(str, Enum):
     CONTENT = "content"
     CONTENT_END = "content_end"        # Final response ends
     STATUS = "status"
-    RATIONALE = "rationale"  # Deprecated - use THINKING instead
     END = "end"
     ERROR = "error"
 

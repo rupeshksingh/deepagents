@@ -1,68 +1,137 @@
 # Background Agents Architecture
 
 **Status:** ✅ Production Ready  
-**Date:** October 14, 2025  
-**Last Updated:** October 14, 2025 (Strict Resume + Heartbeats)
+**Date:** October 25, 2025  
+**Last Updated:** October 25, 2025 (MongoDB Task Queue + Durable Execution)
 
 ---
 
 ## Overview
 
-The streaming API supports **production-grade background agent execution**. This enables:
+The streaming API supports **production-grade durable background agent execution**. This enables:
 
-- ✅ **Multiple agents running simultaneously** (5+ tested)
+- ✅ **Tasks survive server restart** (MongoDB-backed queue with leases)
+- ✅ **Multiple agents running simultaneously** (horizontally scalable workers)
 - ✅ **User can switch between chats** - see live progress in all
-- ✅ **Agents continue regardless of stream connections** (30s-30min runs)
-- ✅ **Multiple clients can watch same agent** (identical events)
+- ✅ **Agents continue regardless of stream connections** (30s-30min+ runs)
+- ✅ **Multiple clients can watch same agent** (identical events from persistence)
 - ✅ **No interruption on tab switch or disconnect** (immune to CancelledError)
 - ✅ **Strict reconnect with Last-Event-ID** (no duplicates)
-- ✅ **Heartbeats every 15s** (liveness indicator for long runs)
+- ✅ **No in-memory state** (stateless workers, pure DB reads)
+- ✅ **Automatic retry on failure** (configurable max attempts)
 
 ---
 
 ## Architecture Changes
 
-### Before (Old Architecture)
+### Before (In-Memory Registry)
 
 ```
-POST /messages → Creates DB record
-GET /stream → Starts agent execution + streams events
-              ↓
-           If client disconnects → Agent stops ❌
-```
-
-**Problem:** Agent tied to stream lifecycle. Can't switch tabs or run multiple agents.
-
-### After (New Architecture)
-
-```
-POST /messages → Creates DB record + STARTS AGENT IMMEDIATELY
+POST /messages → Creates DB record + Starts asyncio task in registry
                  ↓
-              Background Task (runs independently)
+              In-Memory Task (lost on restart) ❌
                  ↓
-              Persists all events to DB
+              Persists events to DB
               
-GET /stream → Watches agent by polling DB
+GET /stream → Watches registry for liveness
               ↓
-           Multiple clients can watch same agent
-           Disconnect = no problem, agent keeps running ✅
+           Registry lost on restart ❌
 ```
 
-**Solution:** Agent runs independently in background. Streams just watch.
+**Problem:** Agent state in memory. Server restart = lost tasks.
+
+### After (MongoDB Task Queue)
+
+```
+POST /messages → Creates DB record + ENQUEUES TASK to MongoDB
+                 ↓
+              Task Queue (pa_tasks collection)
+                 ↓
+              Worker claims task (lease-based locking)
+                 ↓
+              Executes agent + persists events
+              
+GET /stream → Watches events by polling DB
+              ↓
+           Checks message status for completion
+           No in-memory dependency ✅
+           
+Server restart → Workers reclaim stale tasks ✅
+```
+
+**Solution:** Tasks persist in MongoDB. Workers claim and execute with leases. Stateless.
 
 ---
 
 ## Components
 
-### 1. `BackgroundAgentRegistry`
+### 1. `TaskQueue`
 
-**File:** `api/background_agent_registry.py`
+**File:** `api/task_queue.py`
 
-Tracks all running agents:
-- Starts agents as asyncio background tasks
-- Tracks agent state (running/completed/error)
-- Manages watchers (streams watching each agent)
-- Cleans up completed agents
+MongoDB-backed task queue with lease-based locking:
+- Enqueues tasks (execute/resume) with payload
+- Workers claim tasks atomically (FIFO)
+- Lease renewal for long-running tasks (prevents reassignment)
+- Automatic retry on failure (max attempts configurable)
+- Stale task recovery on startup (requeue expired leases)
+- No in-memory state (pure MongoDB operations)
+
+**Collection:** `pa_tasks`
+
+```python
+{
+  "_id": ObjectId,
+  "type": "execute" | "resume",
+  "chat_id": str,
+  "message_id": str,
+  "payload": {...},
+  "status": "queued" | "running" | "completed" | "failed",
+  "lease_until": datetime | None,
+  "attempts": int,
+  "max_attempts": int,
+  "error": str | None,
+  "worker_id": str | None
+}
+```
+
+### 2. `BackgroundWorker`
+
+**File:** `scripts/worker.py`
+
+Standalone worker process:
+- Claims tasks from queue (lease-based)
+- Executes `execute_agent_pure()` or `execute_resume_pure()`
+- Renews lease every 60s (prevents timeout)
+- Marks task completed/failed
+- Graceful shutdown on SIGTERM (task reassigned when lease expires)
+- Can run multiple workers for horizontal scaling
+
+### Event ID Policy & SSE Resume
+
+**CRITICAL:** Event IDs follow a strict persistence-based model:
+
+1. **Emitter IDs are Ephemeral**
+   - `StreamingEventEmitter._generate_event_id()` creates temporary IDs during execution
+   - Format: `{timestamp_ms}_{seq:04d}_{random}`
+   - These IDs are **NOT** persisted to MongoDB
+
+2. **Persisted IDs are Canonical**
+   - `EventPersistence.append_event()` **regenerates** event IDs during write (lines 129-130)
+   - Uses atomic per-message sequence counter from `message_counters` collection
+   - Format: `{timestamp_ms}_{seq:04d}_{random8}`
+   - These IDs are what clients receive in SSE streams
+
+3. **SSE Resume with `Last-Event-ID`**
+   - Clients MUST use the `id` field from received SSE events
+   - `GET /stream?since={event_id}` or `Last-Event-ID: {event_id}` header
+   - `EventPersistence.get_events()` parses seq from ID and returns events with seq > parsed_seq
+   - Using emitter IDs will cause resume failures (ID not found in DB)
+
+4. **Invariants**
+   - Event ordering guaranteed by atomic seq counter
+   - Multiple clients can resume from same checkpoint independently
+   - Event IDs are immutable once persisted
 
 ```python
 registry = get_agent_registry()

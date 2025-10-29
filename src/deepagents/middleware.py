@@ -285,6 +285,27 @@ def create_task_tool(
                 pass  # Don't break if streaming fails
 
             sub_agent = agents[subagent_type]
+            
+            # Temporarily set emitter context to subagent for correct tool event attribution
+            try:
+                from api.streaming.emitter import get_current_emitter
+                emitter = get_current_emitter()
+                original_agent_type = None
+                original_agent_id = None
+                original_parent_call_id = None
+                
+                if emitter:
+                    # Save original context
+                    original_agent_type = emitter.agent_type
+                    original_agent_id = emitter.agent_id
+                    original_parent_call_id = emitter.parent_call_id
+                    
+                    # Set subagent context
+                    emitter.agent_type = "subagent"
+                    emitter.agent_id = subagent_id
+                    emitter.parent_call_id = tool_call_id
+            except Exception:
+                pass
             # Create clean state for subagent with ONLY the task description
             # Filter to only pass the three critical context files to subagents
             files_dict = state.get("files", {}) if state else {}
@@ -328,6 +349,12 @@ def create_task_tool(
                         parent_call_id=tool_call_id,
                         ms=subagent_execution_ms
                     )
+                    
+                    # Restore original emitter context
+                    if original_agent_type is not None:
+                        emitter.agent_type = original_agent_type
+                        emitter.agent_id = original_agent_id
+                        emitter.parent_call_id = original_parent_call_id
             except Exception:
                 pass  # Don't break if streaming fails
             
@@ -389,6 +416,27 @@ def create_task_tool(
                 pass  # Don't break if streaming fails
 
             sub_agent = agents[subagent_type]
+            
+            # Temporarily set emitter context to subagent for correct tool event attribution (sync)
+            try:
+                from api.streaming.emitter import get_current_emitter
+                emitter = get_current_emitter()
+                original_agent_type = None
+                original_agent_id = None
+                original_parent_call_id = None
+                
+                if emitter:
+                    # Save original context
+                    original_agent_type = emitter.agent_type
+                    original_agent_id = emitter.agent_id
+                    original_parent_call_id = emitter.parent_call_id
+                    
+                    # Set subagent context
+                    emitter.agent_type = "subagent"
+                    emitter.agent_id = subagent_id
+                    emitter.parent_call_id = tool_call_id
+            except Exception:
+                pass
             # Create clean state for subagent with ONLY the task description
             # Filter to only pass the three critical context files to subagents
             files_dict = state.get("files", {}) if state else {}
@@ -428,6 +476,12 @@ def create_task_tool(
                             parent_call_id=tool_call_id,
                             ms=subagent_execution_ms
                         ))
+                        
+                        # Restore original emitter context
+                        if original_agent_type is not None:
+                            emitter.agent_type = original_agent_type
+                            emitter.agent_id = original_agent_id
+                            emitter.parent_call_id = original_parent_call_id
                     except RuntimeError:
                         pass  # No running loop
             except Exception:
@@ -825,7 +879,14 @@ class PersistentSummarizationMiddleware(AgentMiddleware):
     ) -> ModelRequest:
         """Inject summary if available."""
         try:
-            thread_id = runtime.config.get("configurable", {}).get("thread_id")
+            # Be robust: runtime may not expose .config in some execution modes
+            cfg = {}
+            try:
+                cfg = getattr(runtime, "config", {}) or {}
+            except Exception:
+                cfg = {}
+            thread_id = ((cfg.get("configurable") or {}).get("thread_id")
+                         or (agent_state.get("thread_id") if hasattr(agent_state, "get") else None))
             if not thread_id:
                 return request
             

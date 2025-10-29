@@ -314,12 +314,23 @@ Generate the summary now:"""
         Optimizes for Gemini's 1M context window:
         - Includes ALL user/AI messages (no arbitrary limit)
         - Minimal truncation (Gemini can handle long messages)
-        - Skips tool messages (verbose, not needed for summary)
+        - Includes HITL outcomes (human decisions are valuable context)
+        - Skips other tool messages (verbose, not needed for summary)
         """
         formatted = []
         for msg in messages:
             if msg.type == "tool":
-                # Skip tool messages - too verbose, not useful for summary
+                # Keep HITL outcomes (human decisions/responses), skip other tools
+                tool_name = getattr(msg, "name", "")
+                if tool_name == "request_human_input":
+                    # Include human response in summary
+                    content = str(msg.content)
+                    # Truncate to reasonable length (HITL responses can be long)
+                    if len(content) > 500:
+                        content = content[:500] + "... [truncated]"
+                    if content.strip():
+                        formatted.append(f"Human (HITL): {content}")
+                # Skip all other tool messages - too verbose
                 continue
             
             role = "User" if msg.type == "human" else "Assistant"
@@ -481,10 +492,11 @@ class ReactAgent:
     persistence for long context memory.
     """
 
-    def __init__(self, mongo_client: MongoClient, org_id: int = 1):
+    def __init__(self, mongo_client: MongoClient, org_id: int = 1, enable_hitl: bool = False):
         self.mongo_client = mongo_client
         self.org_id = org_id
         self.db_name = f"org_{org_id}"
+        self.enable_hitl = enable_hitl  # Control HITL interrupts (production: True, tests: False)
 
         self.checkpointer = MongoDBSaver(
             client=mongo_client,
@@ -493,7 +505,7 @@ class ReactAgent:
 
         self.model = ChatAnthropic(
             model="claude-sonnet-4-5-20250929",
-            max_tokens=120000
+            max_tokens=60000
         )
 
         set_agent_context("react_agent", f"react_agent_{org_id}")
@@ -508,7 +520,7 @@ class ReactAgent:
 
         self.agent = self._create_agent()
 
-        logger.info(f"ReactAgent initialized for org_{org_id}")
+        logger.info(f"ReactAgent initialized for org_{org_id} (HITL: {enable_hitl})")
 
     # Workspace constants (virtual filesystem paths)
     WORKSPACE_ROOT = "/workspace"
@@ -595,6 +607,15 @@ class ReactAgent:
                 PersistentSummarizationMiddleware(self.summary_manager)
             ]
             
+            # Configure HITL (Human-in-the-Loop) based on enable_hitl flag
+            # Production: True (enables interrupts), Tests: False (normal execution)
+            tool_configs = None
+            if self.enable_hitl:
+                tool_configs = {
+                    # Interrupt when the agent calls HITL tool
+                    "request_human_input": True,
+                }
+            
             agent_graph = async_create_deep_agent(
                 tools=tools,
                 subagents=subagents,
@@ -603,10 +624,7 @@ class ReactAgent:
                 checkpointer=self.checkpointer,
                 context_schema=DeepAgentState,
                 middleware=custom_middleware,
-                tool_configs={
-                    # Interrupt when the agent calls HITL tool
-                    "request_human_input": True,
-                },
+                tool_configs=tool_configs,
             )
 
             configured_agent = agent_graph.with_config(
@@ -712,167 +730,14 @@ class ReactAgent:
         }
         return files
 
-    async def chat_streaming(
-        self,
-        user_query: str,
-        thread_id: str,
-        tender_id: Optional[str] = None,
-        user_id: Optional[str] = None,
-    ) -> AsyncGenerator[Dict[str, Any], None]:
-        """
-        Chat with streaming response using MongoDB checkpointer.
-
-        Args:
-            user_query: The user's query
-            thread_id: Unique thread ID for conversation persistence
-            tender_id: Optional tender ID for context
-            user_id: Optional user ID for tracking
-
-        Yields:
-            Dict containing streaming response chunks
-        """
-        session_id = log_query_start(user_query)
-        start_time = time.time()
-
-        try:
-            if self.agent is None:
-                yield {
-                    "chunk_type": "error",
-                    "content": "Agent is not properly initialized. Please check your configuration.",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }
-                return
-
-            # Build context files first - they'll be available in state
-            context_files = self._build_context_files(tender_id) if tender_id else {}
-            
-            # Check if we should inject tender context (only for first message)
-            should_inject_context = self._should_inject_tender_context(thread_id) if tender_id else False
-            
-            # Pre-load summary & file index for main agent to answer generic questions quickly
-            # Subagents won't get this - they only get files in state (via middleware filtering)
-            # ONLY inject on first message to avoid memory bloat
-            if tender_id and context_files and should_inject_context:
-                tender_summary = context_files.get(self.CONTEXT_SUMMARY_PATH, "")
-                file_index = context_files.get(self.CONTEXT_FILE_INDEX_PATH, "")
-                
-                enhanced_query = f"""<tender_context>
-<tender_summary>
-{tender_summary}
-</tender_summary>
-
-<file_index>
-{file_index}
-</file_index>
-</tender_context>
-
-User Query: {user_query}"""
-                messages = [{"role": "user", "content": enhanced_query}]
-            else:
-                # Follow-up message - just use plain query
-                messages = [{"role": "user", "content": user_query}]
-
-            config = {"configurable": {"thread_id": thread_id}}
-
-            # Enforce single-tender-per-thread guard
-            try:
-                self._ensure_single_tender_scope(thread_id, tender_id)
-            except Exception as guard_err:
-                yield {
-                    "chunk_type": "error",
-                    "content": str(guard_err),
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "thread_id": thread_id,
-                }
-                return
-
-            # Bootstrap /context files into virtual filesystem state
-            # IMPORTANT: files must be set unconditionally so checkpointer doesn't drop them
-            state_input: Dict[str, Any] = {
-                "messages": messages,
-                "files": context_files,  # Always set, even if empty dict
-            }
-            if tender_id and context_files:
-                # Also store cluster_id at top-level for tools to access without file read
-                state_input["cluster_id"] = context_files.get(self.CONTEXT_CLUSTER_ID_PATH, "68c99b8a10844521ad051543")
-
-            yield {
-                "chunk_type": "start",
-                "content": "Processing query...",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "thread_id": thread_id,
-                "tender_id": tender_id,
-                "user_id": user_id,
-            }
-
-            response = await self.agent.ainvoke(state_input, config=config)
-
-            # Trigger async summarization (non-blocking)
-            self._schedule_summarization(thread_id, config)
-
-            if isinstance(response, dict) and "messages" in response:
-                last_message = response["messages"][-1]
-                if isinstance(last_message, dict):
-                    agent_response = last_message.get("content", str(response))
-                else:
-                    agent_response = last_message.content
-            else:
-                agent_response = str(response)
-
-            words = agent_response.split()
-            chunk_size = 10
-
-            for i in range(0, len(words), chunk_size):
-                chunk = " ".join(words[i : i + chunk_size])
-                yield {
-                    "chunk_type": "content",
-                    "content": chunk,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "thread_id": thread_id,
-                }
-                await asyncio.sleep(0.05)
-
-            processing_time_ms = int((time.time() - start_time) * 1000)
-
-            yield {
-                "chunk_type": "end",
-                "content": "Query processing completed",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "thread_id": thread_id,
-                "processing_time_ms": processing_time_ms,
-                "total_response": agent_response,
-            }
-
-            logger.info(
-                f"Successfully processed streaming query in {processing_time_ms}ms"
-            )
-            log_query_end(session_id, agent_response)
-            
-            # Increment message count after successful response
-            if tender_id:
-                try:
-                    threads_coll = self.mongo_client[self.db_name]["threads"]
-                    threads_coll.update_one(
-                        {"thread_id": thread_id},
-                        {"$inc": {"message_count": 1}}
-                    )
-                except Exception as msg_count_err:
-                    logger.warning(f"Failed to increment message count: {msg_count_err}")
-
-        except Exception as e:
-            logger.error(f"Error in streaming query processing: {e}")
-            error_response = f"I apologize, but I encountered an error while processing your request: {str(e)}"
-
-            yield {
-                "chunk_type": "error",
-                "content": error_response,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "thread_id": thread_id,
-                "error": str(e),
-            }
-
-            log_query_end(session_id, error_response)
-
+    # NOTE: chat_streaming() method removed - use production API endpoints instead
+    # Production streaming path: POST /api/chats/{chat_id}/messages → GET .../stream
+    # See api/streaming_store.py for the actual streaming implementation with:
+    # - True SSE streaming via agent.agent.astream()
+    # - HITL interrupt detection
+    # - Event persistence
+    # - Background summarization
+    
     async def chat_sync(
         self,
         user_query: str,

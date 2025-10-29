@@ -48,7 +48,8 @@ class StreamingEventEmitter:
         chat_id: str, 
         maxsize: int = 1000,
         agent_type: str = "main",
-        agent_id: Optional[str] = None
+        agent_id: Optional[str] = None,
+        persistence: Optional['EventPersistence'] = None
     ):
         """
         Initialize emitter.
@@ -59,6 +60,7 @@ class StreamingEventEmitter:
             maxsize: Maximum queue size
             agent_type: Type of agent ("main" or "subagent")
             agent_id: Unique agent identifier
+            persistence: Optional EventPersistence for fallback writes
         """
         self.message_id = message_id
         self.chat_id = chat_id
@@ -74,6 +76,9 @@ class StreamingEventEmitter:
         
         # Sub-agent tracking
         self.parent_call_id: Optional[str] = None  # Set when spawned as subagent
+        
+        # Injected persistence for fallback (avoids creating new MongoClient per event)
+        self._persistence = persistence
         
         logger.info(f"StreamingEventEmitter created for message {message_id} (agent_type={agent_type})")
     
@@ -104,13 +109,13 @@ class StreamingEventEmitter:
     
     async def emit(self, event: StreamEvent) -> bool:
         """
-        Emit an event to the stream.
+        Emit an event to the stream with backpressure fallback.
         
         Args:
             event: The event to emit
             
         Returns:
-            True if event was queued, False if dropped
+            True if event was queued or persisted, False if dropped
         """
         if not self._active:
             return False
@@ -131,13 +136,29 @@ class StreamingEventEmitter:
                 )
                 return False
             else:
-                # Critical events must not be dropped
-                logger.error(
+                # Critical events: fallback to direct persistence
+                logger.warning(
                     f"Queue full for message {self.message_id}, "
-                    f"dropping critical event type: {event.type}"
+                    f"critical event type {event.type} will use fallback persistence"
                 )
-                # In production, we might want to implement backpressure here
-                return False
+                # Attempt direct persistence as backpressure fallback
+                if self._persistence:
+                    try:
+                        self._persistence.append_event(self.message_id, self.chat_id, event)
+                        logger.info(f"Critical event persisted via fallback for {self.message_id}")
+                        return True
+                    except Exception as fallback_err:
+                        logger.error(
+                            f"Fallback persistence failed for {self.message_id}: {fallback_err}. "
+                            f"Event type {event.type} MAY BE LOST."
+                        )
+                        return False
+                else:
+                    logger.error(
+                        f"No persistence available for fallback. "
+                        f"Event type {event.type} for {self.message_id} MAY BE LOST."
+                    )
+                    return False
     
     async def get_next(self, timeout: float = 0.1) -> Optional[StreamEvent]:
         """

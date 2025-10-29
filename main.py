@@ -17,6 +17,7 @@ import uvicorn
 from api.streaming_router import create_streaming_router
 from api.models import ApiInfoResponse, HealthResponse
 from api.store import ApiStore
+from api.task_queue import get_task_queue
 
 logging.basicConfig(
     level=logging.INFO,
@@ -90,8 +91,9 @@ except Exception as e:
 
 if mongo_client:
     try:
-        # Register streaming API router (MVP)
-        streaming_router = create_streaming_router(mongo_client, db_name="proposal_assistant")
+        # Register streaming API router
+        # Using org_1 database (org-wise convention)
+        streaming_router = create_streaming_router(mongo_client, db_name="org_1")
         app.include_router(streaming_router)
         logger.info("Streaming API router registered successfully")
     except Exception as e:
@@ -224,6 +226,7 @@ async def startup_event():
     """
     Application startup event handler.
     Logs startup information and verifies connections.
+    Resets stale tasks from previous crashes.
     """
     logger.info("=" * 60)
     logger.info("Starting Proposal Assistant API v2.0.0")
@@ -233,6 +236,15 @@ async def startup_event():
         logger.info("✓ MongoDB connection: OK")
         logger.info("✓ API endpoints: Registered")
         logger.info("✓ Agent service: Ready")
+        
+        # Reset stale tasks (recover from crashes)
+        try:
+            task_queue = get_task_queue(mongo_client, db_name="org_1")
+            reset_count = task_queue.reset_stale_tasks()
+            if reset_count > 0:
+                logger.info(f"✓ Recovered {reset_count} stale tasks from previous session")
+        except Exception as e:
+            logger.warning(f"Failed to reset stale tasks: {e}")
     else:
         logger.warning("✗ MongoDB connection: FAILED")
         logger.warning("✗ API endpoints: Not available")

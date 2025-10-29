@@ -561,5 +561,10 @@ REACT_TOOLS = [
     request_human_input,
 ]
 
-REACT_TOOLS_DOC = [search_tender_corpus, get_file_content, request_human_input]
-REACT_TOOLS_WEB = [web_search, request_human_input]
+# Subagent tools (without HITL - only main agent can interrupt)
+REACT_TOOLS_DOC = [search_tender_corpus, get_file_content]
+REACT_TOOLS_WEB = [web_search]
+
+# Legacy: Keep HITL versions for backwards compatibility (not used)
+REACT_TOOLS_DOC_WITH_HITL = [search_tender_corpus, get_file_content, request_human_input]
+REACT_TOOLS_WEB_WITH_HITL = [web_search, request_human_input]

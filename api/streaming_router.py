@@ -25,9 +25,9 @@ from api.models import (
     PaginatedResponse,
 )
 from api.store import ApiStore
-from api.utils import validate_uuid, validate_object_id
+from api.utils import validate_chat_id, validate_object_id
 from api.streaming.persistence import EventPersistence
-from api.background_agent_registry import get_agent_registry
+from api.task_queue import get_task_queue
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +50,7 @@ class StreamingApiRouter:
         self.router = APIRouter(prefix="/api", tags=["Streaming API (MVP)"])
         self.store = ApiStore(client, db_name)
         self.event_persistence = EventPersistence(client, db_name)
+        self.task_queue = get_task_queue(client, db_name)
         
         self._register_routes()
         
@@ -159,6 +160,15 @@ class StreamingApiRouter:
             summary="Get active agents",
             description="Get list of currently running agents."
         )
+        
+        self.router.add_api_route(
+            "/agents/metrics",
+            self.get_registry_metrics,
+            methods=["GET"],
+            status_code=status.HTTP_200_OK,
+            summary="Get registry metrics",
+            description="Get registry statistics and performance metrics."
+        )
     
     # ========================================================================
     # User & Chat Endpoints
@@ -264,7 +274,7 @@ class StreamingApiRouter:
             ChatResponse with chat details and message count
         """
         try:
-            validate_uuid(chat_id)
+            validate_chat_id(chat_id)
             chat = self.store.get_chat(chat_id)
             
             if not chat:
@@ -301,7 +311,7 @@ class StreamingApiRouter:
             PaginatedResponse with message list
         """
         try:
-            validate_uuid(chat_id)
+            validate_chat_id(chat_id)
             
             # Check if chat exists
             chat = self.store.get_chat(chat_id)
@@ -356,7 +366,7 @@ class StreamingApiRouter:
         """
         try:
             # Validate input
-            if not validate_uuid(chat_id):
+            if not validate_chat_id(chat_id):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Invalid chat_id format"
@@ -403,33 +413,22 @@ class StreamingApiRouter:
                 f"user={user_message.message_id}, assistant={assistant_message.message_id}"
             )
             
-            # START AGENT IMMEDIATELY AS BACKGROUND TASK
-            # This enables multiple agents running simultaneously
-            # Streams will watch the agent, not start it
-            from api.streaming_store import run_agent_background
-            
-            registry = get_agent_registry()
-            
-            # Create agent coroutine
-            agent_coro = run_agent_background(
-                store=self.store,
-                event_persistence=self.event_persistence,
+            # ENQUEUE TASK FOR BACKGROUND EXECUTION
+            # Worker will pick it up and execute
+            # Streams watch persisted events, not the worker
+            task_id = self.task_queue.enqueue_task(
+                task_type="execute",
                 chat_id=chat_id,
                 message_id=assistant_message.message_id,
-                user_content=request.content,
-                metadata=request.metadata or {}
-            )
-            
-            # Start as background task
-            await registry.start_agent(
-                message_id=assistant_message.message_id,
-                chat_id=chat_id,
-                agent_coro=agent_coro
+                payload={
+                    "content": request.content,
+                    "metadata": request.metadata or {}
+                }
             )
             
             logger.info(
-                f"Started background agent for message {assistant_message.message_id}. "
-                f"Stream will watch it at {stream_url}"
+                f"Enqueued task {task_id} for message {assistant_message.message_id}. "
+                f"Stream will watch events at {stream_url}"
             )
             
             return MessageCreateResponse(
@@ -475,7 +474,7 @@ class StreamingApiRouter:
         """
         try:
             # Validate
-            if not validate_uuid(chat_id):
+            if not validate_chat_id(chat_id):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Invalid chat_id format"
@@ -501,31 +500,24 @@ class StreamingApiRouter:
                     detail="Message does not belong to specified chat"
                 )
             
-            # NOTE: Agent already started on POST. Stream endpoint only watches persisted events.
+            # NOTE: Task already enqueued on POST. Stream endpoint only watches persisted events.
             # No need to fetch prior user_content for execution here.
             
-            # WATCH agent execution (agent already running in background)
+            # WATCH agent execution (task running in worker)
             async def generate_sse():
                 """
                 Generate SSE stream by watching agent execution.
                 
                 This watcher is completely independent from agent execution.
                 Client disconnect does NOT affect the agent.
+                Reads purely from persisted events in MongoDB.
                 """
-                import uuid
-                watcher_id = str(uuid.uuid4())
-                registry = get_agent_registry()
-                
                 try:
-                    # Register as watcher
-                    await registry.register_watcher(message_id, watcher_id)
-                    
                     # Get since_id from Last-Event-ID header or query param
                     last_event_id = request.headers.get("last-event-id") or since
                     
                     logger.info(
-                        f"Watcher {watcher_id} watching message {message_id}, "
-                        f"since_id={last_event_id}"
+                        f"Stream opened for message {message_id}, since_id={last_event_id}"
                     )
                     
                     # Import here to avoid circular dependency
@@ -534,6 +526,8 @@ class StreamingApiRouter:
                     # Watch agent by polling persistence
                     async for event in watch_agent_stream(
                         event_persistence=self.event_persistence,
+                        store=self.store,
+                        task_queue=self.task_queue,
                         chat_id=chat_id,
                         message_id=message_id,
                         since_id=last_event_id
@@ -546,26 +540,26 @@ class StreamingApiRouter:
                             yield f"data: {event.model_dump_json(exclude_none=True)}\n\n"
                         except (asyncio.CancelledError, GeneratorExit):
                             # Client disconnected mid-yield
-                            logger.info(f"Watcher {watcher_id} disconnected during yield")
+                            logger.info(f"Stream disconnected during yield for message {message_id}")
                             return  # Exit cleanly without error
                     
-                    logger.info(f"Watcher {watcher_id} completed for message {message_id}")
+                    logger.info(f"Stream completed for message {message_id}")
                     
                 except (asyncio.CancelledError, GeneratorExit):
                     # Client disconnected - agent keeps running
                     # This is EXPECTED behavior, not an error
-                    logger.info(f"Watcher {watcher_id} disconnected (client left)")
+                    logger.info(f"Stream disconnected (client left) for message {message_id}")
                     return  # Exit cleanly
                     
                 except Exception as e:
                     # Real error in watcher - log and send error event
-                    logger.error(f"Watcher {watcher_id} error: {e}", exc_info=True)
+                    logger.error(f"Stream error for message {message_id}: {e}", exc_info=True)
                     
                     # Try to send error event to client (may fail if disconnected)
                     try:
                         from api.streaming.events import create_error_event
                         error_event = create_error_event(
-                            f"error_{message_id}_{watcher_id}",
+                            f"error_{message_id}_stream",
                             f"Streaming error: {str(e)}"
                         )
                         yield f"retry: 3000\n"
@@ -575,15 +569,6 @@ class StreamingApiRouter:
                     except Exception:
                         # Client already gone, can't send error
                         pass
-                
-                finally:
-                    # ALWAYS unregister watcher, even on exception
-                    # Don't let unregister errors crash the generator
-                    try:
-                        await registry.unregister_watcher(message_id, watcher_id)
-                        logger.debug(f"Watcher {watcher_id} unregistered")
-                    except Exception as unreg_err:
-                        logger.error(f"Failed to unregister watcher {watcher_id}: {unreg_err}")
             
             return StreamingResponse(
                 generate_sse(),
@@ -696,7 +681,7 @@ class StreamingApiRouter:
             dict with completion status and final response
         """
         try:
-            validate_uuid(chat_id)
+            validate_chat_id(chat_id)
             validate_object_id(message_id)
             
             # Get message to verify it's interrupted
@@ -740,12 +725,13 @@ class StreamingApiRouter:
                     )
                 resume_args = [{"type": "edit", "args": args}]
             elif action == "respond":
+                # NOTE: LangGraph expects 'response' not 'respond' for human input
                 if not args:
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail="Respond action requires 'args' parameter (human response)"
                     )
-                resume_args = [{"type": "respond", "args": args}]
+                resume_args = [{"type": "response", "args": args}]  # Fixed: 'response' not 'respond'
             elif action == "ignore":
                 resume_args = [{"type": "ignore"}]
             else:
@@ -754,40 +740,40 @@ class StreamingApiRouter:
                     detail=f"Invalid action: {action}. Must be accept/edit/respond/ignore"
                 )
             
-            # Resume the agent
-            agent = self.store._get_agent()
-            config = {"configurable": {"thread_id": thread_id}}
+            # Build resume command
+            from langgraph.types import Command
+            resume_command = Command(resume=resume_args)
             
-            # Resume with command
-            result = await agent.agent.ainvoke(
-                Command(resume=resume_args),
-                config=config
+            # ENQUEUE RESUME TASK FOR BACKGROUND EXECUTION
+            # Worker will pick it up and execute
+            task_id = self.task_queue.enqueue_task(
+                task_type="resume",
+                chat_id=chat_id,
+                message_id=message_id,
+                payload={
+                    "thread_id": thread_id,
+                    "resume_command": resume_command.__dict__,  # Serialize Command object
+                    "metadata": {
+                        **(message.metadata or {}),
+                        "resume_action": action
+                    }
+                }
             )
             
-            # Extract final response
-            from langchain_core.messages import AIMessage
-            final_response = ""
-            if "messages" in result and result["messages"]:
-                last_message = result["messages"][-1]
-                if isinstance(last_message, AIMessage):
-                    final_response = last_message.content
-            
-            # Update message with final response
-            from api.models import MessageStatus
-            self.store.update_message_status(
-                message_id,
-                MessageStatus.COMPLETED,
-                content=final_response,
-                metadata={"resumed": True, "resume_action": action}
+            logger.info(
+                f"Enqueued resume task {task_id} for message {message_id} with action: {action}. "
+                f"Watchers can observe via SSE stream."
             )
             
-            logger.info(f"Resumed message {message_id} with action: {action}")
+            # Return stream URL for watching resume progress
+            stream_url = f"/api/chats/{chat_id}/messages/{message_id}/stream"
             
             return {
                 "message_id": message_id,
-                "status": "completed",
+                "status": "resuming",  # Changed from "completed" to reflect async nature
                 "action": action,
-                "response": final_response
+                "stream_url": stream_url,
+                "instructions": "Resume started in background. Watch via GET stream endpoint for progress."
             }
             
         except HTTPException:
@@ -812,20 +798,20 @@ class StreamingApiRouter:
             dict with active agent count and details
         """
         try:
-            registry = get_agent_registry()
-            
-            # Get all running agents
-            running_tasks = await registry.list_running()
+            # Get all running tasks from queue
+            running_tasks = self.task_queue.list_tasks_by_status("running")
             
             # Build response
             agents = []
             for task in running_tasks:
                 agents.append({
-                    "message_id": task.message_id,
-                    "chat_id": task.chat_id,
-                    "started_at": task.started_at.isoformat(),
-                    "watchers": len(task.watchers),
-                    "error": task.error
+                    "message_id": task["message_id"],
+                    "chat_id": task["chat_id"],
+                    "type": task["type"],
+                    "started_at": task["created_at"].isoformat() if hasattr(task["created_at"], "isoformat") else task["created_at"],
+                    "attempts": task["attempts"],
+                    "worker_id": task.get("worker_id"),
+                    "error": task.get("error")
                 })
             
             return {
@@ -838,6 +824,24 @@ class StreamingApiRouter:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to get active agents: {str(e)}"
+            )
+    
+    async def get_registry_metrics(self) -> dict:
+        """
+        Get task queue metrics and statistics.
+        
+        Returns:
+            dict with task metrics
+        """
+        try:
+            metrics = self.task_queue.get_metrics()
+            return metrics
+            
+        except Exception as e:
+            logger.error(f"Failed to get task metrics: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to get task metrics: {str(e)}"
             )
 
 

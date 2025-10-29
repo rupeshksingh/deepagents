@@ -24,6 +24,18 @@ class EventPersistence:
     
     Uses a separate 'message_events' collection to avoid 16MB document limit
     and improve write performance via batching.
+    
+    **Event ID Policy (CRITICAL for SSE resume):**
+    - Event IDs are **regenerated** during persistence (lines 129-130, 209)
+    - Format: `{timestamp_ms}_{seq:04d}_{random8}` where seq is atomic per message
+    - Emitter-generated IDs are ephemeral and NEVER reach the database
+    - Clients MUST use persisted event IDs from SSE stream for `Last-Event-ID` header
+    - DO NOT use emitter._generate_event_id() IDs for resume (they don't exist in DB)
+    
+    **Resume Behavior:**
+    - `get_events(message_id, since_id)` extracts seq from `since_id` format
+    - Returns events with seq > extracted_seq (strict ordering guaranteed)
+    - Multiple clients can resume from same checkpoint independently
     """
     
     def __init__(self, mongo_client: MongoClient, db_name: str = "org_1"):
